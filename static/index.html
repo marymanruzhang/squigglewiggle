@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SquiggleWiggle AI</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+    <div class="background-orbs">
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+    </div>
+
+    <main class="glass-panel">
+        <header>
+            <h1>SquiggleWiggle<span class="gradient-text">.ai</span></h1>
+            <p>Draw a sketch, and let the AI bring it to life.</p>
+        </header>
+
+        <div class="workspace">
+            <div class="canvas-container">
+                <canvas id="sketchpad" width="400" height="400"></canvas>
+                <div class="canvas-tools">
+                    <button id="clearBtn" class="btn secondary">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
+                        Clear
+                    </button>
+                </div>
+            </div>
+
+            <div class="output-container" id="outputPanel">
+                <div class="empty-state" id="emptyState">
+                    <div class="loader" id="loader" style="display: none;"></div>
+                    <p id="statusMsg">Your animation will appear here.</p>
+                </div>
+                
+                <div class="result-display" id="resultDisplay" style="display: none;">
+                    <img id="animatedGif" src="" alt="Animated Output">
+                    <div class="ai-insight">
+                        <h3>AI Recognition</h3>
+                        <div class="tag-row">
+                            <span class="badge">Category: <strong id="predCategory">...</strong></span>
+                            <span class="badge">Confidence: <strong id="predConf">...</strong>%</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script src="static/app.js"></script>
+</body>
+</html>

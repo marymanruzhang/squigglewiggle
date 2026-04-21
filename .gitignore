@@ -1,0 +1,13 @@
+hyper sense participant drawings/
+output/
+output_23/
+output_api/
+*.keras
+.DS_Store
+Participant *
+__pycache__/
+*.gif
+
+# QuickDraw Datasets
+quickdraw_data/
+*.npy

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "Bash(python3 -c \"import numpy, PIL, cv2; print\\('numpy', numpy.__version__\\); print\\('PIL', PIL.__version__\\); print\\('cv2', cv2.__version__\\)\")",
+      "Bash(python3 -c \"import numpy, PIL; print\\('numpy', numpy.__version__\\); print\\('PIL', PIL.__version__\\)\")",
+      "Bash(pip3 install *)",
+      "Bash(python3 -c \"import cv2, scipy; print\\('cv2', cv2.__version__\\); print\\('scipy ok'\\)\")",
+      "Bash(python3 demo.py)",
+      "Bash(open /Users/cassie/Desktop/hypersense/output/)",
+      "Bash(python3 -)",
+      "Bash(python3 -c ' *)",
+      "Bash(open /Users/cassie/Desktop/hypersense/output/round_03.gif)",
+      "Bash(open /Users/cassie/Desktop/hypersense/output/round_04.gif)",
+      "Bash(open /tmp/leg_0.png /tmp/leg_1.png /tmp/leg_2.png /tmp/leg_3.png)"
+    ]
+  }
+}
