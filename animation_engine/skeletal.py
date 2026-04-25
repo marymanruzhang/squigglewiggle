@@ -1,6 +1,8 @@
 """
-Skeletal animation — each leg is extracted as stroke-pixel coordinates,
-rotated around its pivot, and drawn independently each frame.
+Limb / mesh animation (local substitute for the “AnimatedDrawings”-style
+pipeline: detect vertical limb regions, then piecewise-affine warp + walk).
+
+This path runs only when `limb_bearing.should_use_limb_mesh(category)` is True.
 
 Walk cycle per leg (phase φ, t in [0, 2π]):
   forward  = sin(t + φ)           ← −1 = fully back, +1 = fully forward
@@ -164,19 +166,12 @@ def _walk_phases(n: int) -> list[float]:
 # Public entry point
 # -----------------------------------------------------------------------
 
-def generate_skeletal_frames(
-    img_pil: Image.Image,
-    n_frames: int = N_FRAMES,
-) -> list[Image.Image]:
-    """
-    Animate with a lift-and-swing walk cycle.
 
-    Each leg's stroke pixels are rotated around their pivot each frame.
-    The body image (with leg pixels removed) is drawn on top to cover junctions.
+def generate_skeletal_frames(img_pil: Image.Image, n_frames: int = N_FRAMES) -> list[Image.Image]:
     """
-    from .animations import generate_frames
+    Find legs, walk cycle via piecewise-affine mesh so strokes bend continuously (fewer breaks).
+    """
     from .category_map import AnimationType
-
     img_rgb = np.array(img_pil.convert("RGB"))
     gray    = img_rgb.mean(axis=2).astype(np.uint8)
     _, stroke = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
@@ -187,91 +182,119 @@ def generate_skeletal_frames(
     leg_data = _build_leg_data(stroke, peaks, bb)
 
     if len(leg_data) < 2:
+        from .animations import generate_frames
         return generate_frames(img_pil, AnimationType.WALK, n_frames)
 
-    # Body image: full stroke MINUS each leg's pixels below its pivot.
-    # This lets the animated legs show through without the body freezing them.
-    body_np = np.where(stroke > 0, 0, 255).astype(np.uint8)
+    # Pre-calculate extended foot geometry limits for each leg
     for ld in leg_data:
-        xl, xr, piv_y = ld["xl"], ld["xr"], ld["piv_y"]
-        body_np[piv_y:, xl:xr] = np.where(
-            stroke[piv_y:, xl:xr] > 0, 255, body_np[piv_y:, xl:xr]
-        )
-    body_pil = Image.fromarray(body_np).convert("RGB")
-    body_arr = np.array(body_pil)
+        piv_x, piv_y = ld["pivot"]
+        xl, xr = ld["xl"], ld["xr"]
+        leg_stroke = stroke[piv_y:, xl:xr]
+        ys, _ = np.where(leg_stroke > 0)
+        if len(ys) > 0:
+            ld["foot_y"] = piv_y + ys.max()
+        else:
+            ld["foot_y"] = ld["knee"][1] + 10
+
+    # Mesh Configuration: Build rigid anchors covering the body
+    body_ys, body_xs = np.where((stroke > 0) & (np.arange(H)[:, None] < bb))
+    if len(body_ys) > 100:
+        idx = np.linspace(0, len(body_ys)-1, 50, dtype=int)
+        fixed_body = np.column_stack((body_xs[idx], body_ys[idx]))
+    else:
+        fixed_body = np.column_stack((body_xs, body_ys))
+        
+    corners = np.array([
+        [0, 0], [W-1, 0], [0, H-1], [W-1, H-1],
+        [0, H//2], [W-1, H//2], [W//2, 0]
+    ])
+    
+    base_src = np.vstack((corners, fixed_body))
+    
+    for ld in leg_data:
+        px, py = ld["pivot"]
+        base_src = np.vstack((base_src, [[px, py]]))
 
     n_legs    = len(leg_data)
     phases    = _walk_phases(n_legs)
     freq      = 1.0
-    max_swing = 35.0   # degrees; larger = more visible on short legs
-    max_lift  = 20     # pixels upward during forward phase
+    max_swing = 35.0
+    max_lift  = 20
     travel_x  = min(int(W * 0.14), 120)
-    max_knee_bend = 45.0  # degrees
+    max_knee_bend = 45.0
+    
+    canvas_rgb = np.array(img_pil.convert("RGB"))
+    from skimage.transform import PiecewiseAffineTransform, warp
 
     frames = []
     for fi in range(n_frames):
         t = (fi / n_frames) * 2 * math.pi
+        
+        src_pts = list(base_src)
+        dst_pts = list(base_src)
 
-        # ── 1. white canvas (grayscale, convert to RGB at end) ───────
-        canvas_np = np.full((H, W), 255, dtype=np.uint8)
-
-        # ── 2. draw each leg's rotated stroke pixels ─────────────────
         for i, ld in enumerate(leg_data):
-            forward = math.sin(freq * t + phases[i])   # −1 … +1
-            angle_hip = -max_swing * forward            # CW = rightward swing
-            angle_knee = max_knee_bend * max(0.0, forward) # bend backward to lift foot
-            lift = int(max_lift * max(0.0, forward))    # upward, forward phase only
-
-            piv_x, piv_y = ld["pivot"]
+            forward = math.sin(freq * t + phases[i])
+            angle_hip = -max_swing * forward
+            angle_knee = max_knee_bend * max(0.0, forward)
+            lift = int(max_lift * max(0.0, forward))
             
-            # --- Upper leg rotation
+            px, py = ld["pivot"]
+            kx, ky = ld["knee"]
+            fx = px
+            fy = ld["foot_y"]
+            
             rad_h = math.radians(angle_hip)
-            cos_h = math.cos(rad_h)
-            sin_h = math.sin(rad_h)
-
-            ux = cos_h * ld["u_rel_x"] - sin_h * ld["u_rel_y"]
-            uy = sin_h * ld["u_rel_x"] + cos_h * ld["u_rel_y"] - lift
+            sh, ch = math.sin(rad_h), math.cos(rad_h)
             
-            px_u = np.round(ux + piv_x).astype(np.int32)
-            py_u = np.round(uy + piv_y).astype(np.int32)
+            new_kx = px + ch*(kx - px) - sh*(ky - py)
+            new_ky = py + sh*(kx - px) + ch*(ky - py) - lift
             
-            valid_u = (px_u >= 0) & (px_u < W) & (py_u >= 0) & (py_u < H)
-            canvas_np[py_u[valid_u], px_u[valid_u]] = 0   # black stroke pixel
-
-            # --- Lower leg rotation
+            src_pts.append([kx, ky])
+            dst_pts.append([new_kx, new_ky])
+            
             rad_tot = math.radians(angle_hip + angle_knee)
-            cos_tot = math.cos(rad_tot)
-            sin_tot = math.sin(rad_tot)
-
-            r_lx = cos_tot * ld["l_rel_x"] - sin_tot * ld["l_rel_y"]
-            r_ly = sin_tot * ld["l_rel_x"] + cos_tot * ld["l_rel_y"]
+            st, ct = math.sin(rad_tot), math.cos(rad_tot)
             
-            hk_dist = ld["knee"][1] - piv_y
-            k_tx = -sin_h * hk_dist
-            k_ty = cos_h * hk_dist - lift
+            new_fx = new_kx + ct*(fx - kx) - st*(fy - ky)
+            new_fy = new_ky + st*(fx - kx) + ct*(fy - ky)
             
-            px_l = np.round(r_lx + k_tx + piv_x).astype(np.int32)
-            py_l = np.round(r_ly + k_ty + piv_y).astype(np.int32)
+            src_pts.append([fx, fy])
+            dst_pts.append([new_fx, new_fy])
+            
+            lw = (ld["xr"] - ld["xl"]) // 2
+            
+            src_pts.extend([[kx - lw, ky], [kx + lw, ky], [fx - lw, fy], [fx + lw, fy]])
+            dst_pts.extend([
+                [new_kx - ch*lw, new_ky - sh*lw], [new_kx + ch*lw, new_ky + sh*lw],
+                [new_fx - ct*lw, new_fy - st*lw], [new_fx + ct*lw, new_fy + st*lw]
+            ])
 
-            valid_l = (px_l >= 0) & (px_l < W) & (py_l >= 0) & (py_l < H)
-            canvas_np[py_l[valid_l], px_l[valid_l]] = 0   # black stroke pixel
-
-        # ── 3. body on top (covers pivot junctions) ──────────────────
-        # body_arr is RGB; canvas_np is grayscale — broadcast to RGB then min
-        canvas_rgb = np.stack([canvas_np] * 3, axis=2)
-        canvas_rgb = np.minimum(canvas_rgb, body_arr)
-
-        # ── 4. whole-body bob + horizontal walk ───────────────────────
-        canvas = Image.fromarray(canvas_rgb)
-        bob    = int(-3 * abs(math.sin(2 * freq * t)))
-        x_off  = int(travel_x * math.sin(t))
-        canvas = canvas.transform(
-            canvas.size, Image.AFFINE,
+        src_pts = np.array(src_pts)
+        dst_pts = np.array(dst_pts)
+        
+        tform = PiecewiseAffineTransform()
+        tform.estimate(dst_pts, src_pts) 
+        warped = warp(
+            canvas_rgb,
+            tform,
+            output_shape=(H, W),
+            order=1,
+            preserve_range=True,
+            mode="constant",
+            cval=255.0,
+        )
+        img_w = Image.fromarray(np.clip(warped, 0, 255).astype(np.uint8))
+        bob = int(-3 * abs(math.sin(2 * freq * t)))
+        x_off = int(travel_x * math.sin(t))
+        final_transformed = img_w.transform(
+            img_w.size,
+            Image.AFFINE,
             (1, 0, -x_off, 0, 1, bob),
-            resample=Image.NEAREST,
+            resample=Image.BICUBIC,
             fillcolor=(255, 255, 255),
         )
 
-        frames.append(canvas)
+        frames.append(final_transformed)
 
     return frames

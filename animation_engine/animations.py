@@ -11,8 +11,8 @@ PIL AFFINE convention:
 
 PIL MESH convention:
   Each (box, quad) maps an output rectangle to a source quadrilateral.
-  quad = (tl_x, tl_y, tr_x, tr_y, br_x, br_y, bl_x, bl_y)
-  For content moving RIGHT by dx: source corners have x = output_corner_x - dx
+  quad corners are ordered: TL, BL, BR, TR  (top-left, bottom-left, …)
+  For content moving DOWN by dy: source TL_y = -dy  (reading from higher up)
 """
 
 import numpy as np
@@ -77,10 +77,6 @@ def _sway(img_np, alpha, n_frames):
     """
     Vertical-shear affine: base stays fixed, top leans L/R.
     Single PIL AFFINE — zero line-quality loss.
-
-    Derivation: want  input_x = x - amp*(bottom-y)/obj_h
-                             = x + (amp/obj_h)*y - amp*bottom/obj_h
-    → (a,b,c, d,e,f) = (1, shear, -shear*bottom, 0, 1, 0)
     """
     top, bottom, left, right, cx, cy, obj_h, obj_w = _object_bounds(alpha)
     max_amp = obj_w * 0.07
@@ -164,7 +160,6 @@ def _wiggle(img_np, alpha, n_frames):
     frames = []
     for i in range(n_frames):
         t = (i / n_frames) * 2 * np.pi
-        # Combine rotation with slight vertical bob for liveliness
         angle = 7 * np.sin(t)
         sy = -obj_h * 0.015 * abs(np.sin(2 * t))
         rotated = img_pil.rotate(angle, center=(cx, cy),
@@ -182,7 +177,7 @@ def _swim(img_np, alpha, n_frames):
     top, bottom, left, right, cx, cy, obj_h, obj_w = _object_bounds(alpha)
     H, W = img_np.shape[:2]
     amp = obj_h * 0.09
-    wavelength = obj_w * 2.0          # long wavelength → gentle gradient
+    wavelength = obj_w * 2.0
     img_pil = Image.fromarray(img_np, "RGBA")
 
     n_strips = 30
@@ -196,17 +191,11 @@ def _swim(img_np, alpha, n_frames):
             x0 = int(gx * strip_w)
             x1 = int((gx + 1) * strip_w)
             x_c = (gx + 0.5) * strip_w
-
-            # Tail factor: 1 at left edge (tail), 0 at right edge (head)
             x_norm = np.clip((x_c - left) / max(obj_w, 1), 0, 1)
             tail = 1.0 - x_norm
-
-            # Vertical displacement — content moves down when dy > 0
-            # source_y = output_y - dy  →  quad y = (0 - dy, H - dy)
             dy = amp * tail * np.sin(2 * np.pi * x_c / wavelength - t)
             mesh.append(((x0, 0, x1, H),
                          (x0, -dy, x0, H - dy, x1, H - dy, x1, -dy)))
-
         frame = img_pil.transform(img_pil.size, Image.MESH, mesh,
                                   resample=Image.BILINEAR)
         frames.append(frame)
@@ -242,6 +231,134 @@ def _shake(img_np, alpha, n_frames):
     return frames
 
 
+def _flap(img_np, alpha, n_frames):
+    """
+    Wing flap via horizontal PIL MESH strips.
+
+    Strips far from the horizontal centre (wings) oscillate vertically;
+    strips near the centre (body) stay fixed.  This produces a natural
+    butterfly / bird flapping motion without any segmentation.
+    """
+    top, bottom, left, right, cx, cy, obj_h, obj_w = _object_bounds(alpha)
+    H, W = img_np.shape[:2]
+    amp = obj_h * 0.24          # wing travel ≈ 24 % of object height
+    img_pil = Image.fromarray(img_np, "RGBA")
+
+    n_strips = 28
+    strip_w = W / n_strips
+
+    frames = []
+    for i in range(n_frames):
+        t = (i / n_frames) * 2 * np.pi
+        mesh = []
+        for gx in range(n_strips):
+            x0 = int(gx * strip_w)
+            x1 = min(int((gx + 1) * strip_w), W)
+            x_c = (gx + 0.5) * strip_w
+
+            # 0 at horizontal centre, 1 at the far edges → "wing factor"
+            half_w = max(obj_w / 2.0, 1.0)
+            wing = np.clip(abs(x_c - cx) / half_w, 0.0, 1.0) ** 0.65
+
+            # dy > 0 → source is higher → content moves DOWN (wings beat down)
+            dy = amp * wing * np.sin(t)
+
+            # quad: TL, BL, BR, TR  (source coordinates for output box)
+            mesh.append(((x0, 0, x1, H),
+                         (x0, -dy, x0, H - dy, x1, H - dy, x1, -dy)))
+
+        frame = img_pil.transform(img_pil.size, Image.MESH, mesh,
+                                  resample=Image.BILINEAR)
+        frames.append(frame)
+    return frames
+
+
+def _hop(img_np, alpha, n_frames):
+    """
+    Hopping: fast ascent with vertical stretch, squash on landing.
+    Frog / rabbit / kangaroo style — asymmetric easing so rise is quick,
+    fall is slightly slower.
+    """
+    top, bottom, left, right, cx, cy, obj_h, obj_w = _object_bounds(alpha)
+    img_pil = Image.fromarray(img_np, "RGBA")
+
+    amp = obj_h * 0.40   # hop height ≈ 40 % of object height
+
+    frames = []
+    for i in range(n_frames):
+        t = (i / n_frames) * 2 * np.pi
+        # sin²(t) gives a smooth parabola-like arc; always ≥ 0
+        phase = np.sin(t)
+        airborne = np.sin(t) ** 2         # 0 → 1 → 0 per half-cycle
+
+        # While in the air: stretch vertically
+        # At peak: full stretch; at landing: squash
+        in_air = phase >= 0               # first half of cycle = in the air
+
+        if in_air:
+            sy      = -amp * airborne
+            stretch = 1.0 + 0.12 * airborne   # taller while rising
+            squash  = 1.0 - 0.06 * airborne
+        else:
+            # Landing squash
+            land_frac = abs(phase)        # 0 at top of arc, 1 at hard landing
+            sy      = 0.0
+            squash  = 1.0 - 0.10 * land_frac
+            stretch = 1.0 + 0.05 * land_frac
+
+        frame = img_pil.transform(
+            img_pil.size, Image.AFFINE,
+            (1 / stretch, 0, cx * (1 - 1 / stretch),
+             0, 1 / squash, cy * (1 - 1 / squash) + sy),
+            resample=Image.BILINEAR,
+            fillcolor=(255, 255, 255, 0),
+        )
+        frames.append(frame)
+    return frames
+
+
+def _crawl(img_np, alpha, n_frames):
+    """
+    Horizontal body wave via PIL MESH *horizontal* strips.
+    Great for multi-legged critters: spider, scorpion, crab, ant.
+    The wave propagates from one side to the other.
+    """
+    top, bottom, left, right, cx, cy, obj_h, obj_w = _object_bounds(alpha)
+    H, W = img_np.shape[:2]
+    amp = obj_w * 0.06          # side-to-side wiggle ≈ 6 % of width
+    wavelength = obj_h * 1.8
+    img_pil = Image.fromarray(img_np, "RGBA")
+
+    n_strips = 24
+    strip_h = H / n_strips
+
+    frames = []
+    for i in range(n_frames):
+        t = (i / n_frames) * 2 * np.pi
+        mesh = []
+        for gy in range(n_strips):
+            y0 = int(gy * strip_h)
+            y1 = min(int((gy + 1) * strip_h), H)
+            y_c = (gy + 0.5) * strip_h
+
+            # Only the lower half of the body (legs) crawls strongly
+            body_frac = np.clip((y_c - top) / max(obj_h, 1), 0.0, 1.0)
+            leg_factor = body_frac ** 0.5
+
+            dx = amp * leg_factor * np.sin(2 * np.pi * y_c / wavelength - t)
+
+            # quad: TL, BL, BR, TR  (source x-shift = -dx moves content right)
+            mesh.append(((0, y0, W, y1),
+                         (-dx, y0, -dx, y1, W - dx, y1, W - dx, y0)))
+
+        frame = img_pil.transform(img_pil.size, Image.MESH, mesh,
+                                  resample=Image.BILINEAR)
+        # Add a gentle side-to-side body drift
+        sx = obj_w * 0.015 * np.sin(t)
+        frames.append(_affine_shift(frame, sx, 0))
+    return frames
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -255,6 +372,9 @@ _GENERATORS = {
     AnimationType.SWIM:   _swim,
     AnimationType.WALK:   _walk,
     AnimationType.SHAKE:  _shake,
+    AnimationType.FLAP:   _flap,
+    AnimationType.HOP:    _hop,
+    AnimationType.CRAWL:  _crawl,
 }
 
 

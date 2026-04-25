@@ -6,7 +6,7 @@ from animation_engine.skeletal import _body_bottom, _find_leg_peaks, _walk_phase
 from animation_engine.animations import N_FRAMES
 
 def test_feet():
-    img_pil = Image.open('Participant 23/Copy of round_03.png').convert('RGB')
+    img_pil = Image.open('hyper sense participant drawings/Participant 35 - B/round_03.png').convert('RGB')
     
     img_rgb = np.array(img_pil)
     gray    = img_rgb.mean(axis=2).astype(np.uint8)

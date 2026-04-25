@@ -6,8 +6,13 @@ output_api/
 .DS_Store
 Participant *
 __pycache__/
+.venv/
 *.gif
 
 # QuickDraw Datasets
 quickdraw_data/
 *.npy
+
+# Logs and debug artifacts
+*.log
+*.png

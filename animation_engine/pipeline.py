@@ -1,6 +1,10 @@
 """
 Main animation pipeline.
 
+Limb / character motion (Meta *AnimatedDrawings*-style 2D mesh) is selected when
+`limb_bearing.should_use_limb_mesh` is true for the classifier label. All other
+classes use the motion in `category_map` (sway, drift, swim, …).
+
 Entry point: animate()
 
 Recognition input format (two modes):
@@ -112,7 +116,11 @@ def _animate_multi_object(
     animated = []
     for comp in components:
         anim_type = get_animation_type(comp["category"])
-        comp_frames = generate_frames(comp["crop"], anim_type, n_frames)
+        if anim_type == AnimationType.SKELETAL:
+            from .skeletal import generate_skeletal_frames
+            comp_frames = generate_skeletal_frames(comp["crop"], n_frames)
+        else:
+            comp_frames = generate_frames(comp["crop"], anim_type, n_frames)
         animated.append((comp["bbox"], comp_frames))
 
     # Composite: for each frame index, paste each animated component onto white canvas
