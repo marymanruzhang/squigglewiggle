@@ -259,6 +259,8 @@ async function beginStory() {
   await spawnBothSketches();
   interceptStoryLogs();
   clearAllCooldowns();
+  // Brief settle period: let agents animate in place before stories fire
+  await new Promise(r => setTimeout(r, 1500));
   startInteractionEngine();
 }
 
@@ -300,10 +302,14 @@ async function spawnBothSketches() {
   const H = konvaStage.height();
   const SIZE = 160;
 
-  // Spawn at 35/65% so they're close enough for nudge to pull them into story range
+  // ── Spawn at canvas centre with 220px spread — just like demo.html ──────
+  //    Agents start close enough that the interaction engine triggers quickly
+  const CX = W * 0.5;
+  const CY = H * 0.5;
+  const SPREAD = 220;
   const positions = [
-    { x: W * 0.35, y: H * 0.50 },
-    { x: W * 0.65, y: H * 0.50 },
+    { x: CX - SPREAD / 2, y: CY },
+    { x: CX + SPREAD / 2, y: CY },
   ];
 
   for (let pid = 1; pid <= 2; pid++) {
@@ -474,20 +480,30 @@ function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
       const g = new Konva.Group({ x: cx, y: cy, draggable: true });
       g.setAttr('agentId', id);
 
-      // Sketch image (with baked-in fill for enclosed regions)
+      // Scale the cropped image uniformly to fit inside `size × size`
+      // so the sketch keeps its natural proportions (no stretching)
+      const aspect  = cw / ch;
+      let imgW, imgH;
+      if (aspect >= 1) {
+        imgW = size;
+        imgH = Math.round(size / aspect);
+      } else {
+        imgH = size;
+        imgW = Math.round(size * aspect);
+      }
+
       g.add(new Konva.Image({
         image: tmp,
-        x: -size / 2, y: -size / 2,
-        width: size, height: size,
+        x: -imgW / 2, y: -imgH / 2,
+        width: imgW, height: imgH,
       }));
 
-
-      // Label pill sitting just below the sketch, centered horizontally
+      // Label pill sits below the actual rendered image height
       const displayLabel = labelText.toLowerCase();
-      const charW = 8;  // approx pixels per character at font size 12
+      const charW = 8;
       const pillW = Math.max(displayLabel.length * charW + 16, 44);
       const pillH = 22;
-      const pillY = size / 2 + 6;   // just below the image
+      const pillY = imgH / 2 + 6;   // just below actual image, not full size
 
       const pill = new Konva.Group({ x: 0, y: pillY });
 

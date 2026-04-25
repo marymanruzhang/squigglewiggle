@@ -86,7 +86,13 @@ export class InteractionEngine {
       if (agent.state !== 'idle') continue;
 
       if (!agent._wander) {
-        agent._wander = { nextPickTime: now + 200 + Math.random() * 600, tx: agent.originPos.x, ty: agent.originPos.y };
+        // Self-moving agents (flutter/fly/swim) settle in place first before drifting
+        // Ground agents start wandering almost immediately
+        const isSM = InteractionEngine.SELF_MOVING_PRESETS.has(agent.defaultMotion);
+        const initDelay = isSM
+          ? 4000 + Math.random() * 2000   // 4–6s: flutter in place first
+          : 200  + Math.random() * 600;   // 0.2–0.8s: ground animals start walking
+        agent._wander = { nextPickTime: now + initDelay, tx: agent.originPos.x, ty: agent.originPos.y };
       }
 
       const w = agent._wander;
