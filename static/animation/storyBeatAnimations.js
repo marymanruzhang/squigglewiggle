@@ -104,6 +104,8 @@ export async function approachTarget(actor, target, ctrl, params = {}) {
   const { margin = 60, duration = 1200 } = params;
   const ap = approachPos(actor, target, margin);
   ctrl.stop(actor.id);
+  // Bring actor to front so it visually overlaps target correctly
+  actor.adapter.bringToFront?.();
   // Lean slightly in direction of travel during move
   const tc = center(target);
   const ac = center(actor);
@@ -129,6 +131,8 @@ export async function approachWithCurve(actor, target, ctrl, params = {}) {
   const midY = ac.y + dy * 0.45 - dx * 0.25;
 
   ctrl.stop(actor.id);
+  // Bring actor to front so it renders on top of target during approach
+  actor.adapter.bringToFront?.();
   await ctrl.moveTo(actor, midX, midY, duration * 0.5);
   const ap = approachPos(actor, target, margin);
   await ctrl.moveTo(actor, ap.x, ap.y, duration * 0.5);

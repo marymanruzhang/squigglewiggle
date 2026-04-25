@@ -112,9 +112,12 @@ export class AnimationController {
     return orbitAround(agent, cx, cy, radius, turns, durationMs);
   }
 
-  /** Return agent to its stored originPos. */
+  /** Return agent to its original spawn position (not the wander-mutated originPos). */
   async returnToOrigin(agent, durationMs = 500) {
-    await this.moveTo(agent, agent.originPos.x, agent.originPos.y, durationMs);
+    // Use spawnPos so agents always return to their fixed spawn positions,
+    // not wherever the wander engine last set originPos.
+    const home = agent.spawnPos || agent.originPos;
+    await this.moveTo(agent, home.x, home.y, durationMs);
     agent.adapter.setRotation(0);
     agent.adapter.setScale(1);
     agent.adapter.setOpacity(1);

@@ -138,6 +138,15 @@ export class LayerAdapter {
     }
   }
 
+  /** Bring this object to the visual front (highest z-order within its layer). */
+  bringToFront() {
+    if (this.library === 'konva') {
+      this.ref.moveToTop(); this._batchDraw();
+    } else if (this.library === 'fabric') {
+      this.ref.bringToFront?.(); this.ref.canvas?.requestRenderAll();
+    }
+  }
+
   // ── BBox ──────────────────────────────────────────────────────────────────
   getBBox() {
     if (this.library === 'konva') {
@@ -192,6 +201,8 @@ export class SceneAgent {
     // Derive origin from adapter's current position
     const pos = this.adapter.getPosition();
     this.originPos = { x: pos.x, y: pos.y };
+    // spawnPos is immutable — always the original spawn point, never mutated by wander/story
+    this.spawnPos  = { x: pos.x, y: pos.y };
 
     // Runtime state
     // States: 'idle' | 'story_active' | 'returning' | 'paused'

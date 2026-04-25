@@ -179,9 +179,9 @@ export function hover(agent, params = {}) {
 }
 
 export function flutter(agent, params = {}) {
-  // Butterfly/moth: figure-8 flight path + fast wing-beat (scaleX squish)
+  // Butterfly/moth: figure-8 flight path + rapid body-tilt for wing-beat feel
   const { xFreq = 0.35, yFreq = 0.6, xAmp = 40, yAmp = 22,
-          wingFreq = 4.5, wingMin = 0.45 } = params;
+          wingFreq = 5.0, wingTilt = 18 } = params;
   const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
     // Figure-8 flight path
@@ -189,30 +189,25 @@ export function flutter(agent, params = {}) {
                        + (xAmp * 0.3) * Math.sin(2 * Math.PI * t * xFreq * 2.7);
     const y = origin.y + yAmp * Math.sin(2 * Math.PI * t * yFreq)
                        + (yAmp * 0.4) * Math.sin(2 * Math.PI * t * yFreq * 1.6);
-    // Gentle body tilt
-    const r = 5 * Math.sin(2 * Math.PI * t * yFreq * 2);
-    // Wing-beat: rapid scaleX oscillation between wingMin and 1.0
-    const wingBeat = wingMin + (1 - wingMin) * 0.5 * (1 + Math.sin(2 * Math.PI * t * wingFreq));
+    // Wing-beat: fast tilt back and forth — visually reads as flapping wings
+    const r = wingTilt * Math.sin(2 * Math.PI * t * wingFreq);
     agent.adapter.setPosition(x, y);
     agent.adapter.setRotation(r);
-    agent.adapter.setScaleXY(wingBeat, 1);
   });
 }
 
 export function fly(agent, params = {}) {
-  // Bird: broad sweeping path + wing-beat scaleY (side-view flapping)
+  // Bird: broad sweeping path + wing-beat tilt (no scale deformation)
   const { xAmp = 90, yAmp = 22, speed = 0.38,
-          wingFreq = 3.5, wingMin = 0.7 } = params;
+          wingFreq = 3.8, wingTilt = 12 } = params;
   const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
     const x = origin.x + xAmp * Math.sin(2 * Math.PI * t * speed);
     const y = origin.y + yAmp * Math.sin(4 * Math.PI * t * speed);
-    const r = 5 * Math.cos(2 * Math.PI * t * speed);
-    // Wing-beat: compress Y to simulate flapping (side-view)
-    const wingBeat = wingMin + (1 - wingMin) * 0.5 * (1 + Math.sin(2 * Math.PI * t * wingFreq));
+    // Wing-beat tilt for side-view flapping
+    const r = wingTilt * Math.sin(2 * Math.PI * t * wingFreq);
     agent.adapter.setPosition(x, y);
     agent.adapter.setRotation(r);
-    agent.adapter.setScaleXY(1, wingBeat);
   });
 }
 
@@ -242,17 +237,14 @@ export function orbit(agent, params = {}) {
 // ─── Water creature motions ───────────────────────────────────────────────────
 
 export function swim(agent, params = {}) {
-  // Fish/aquatic: side-to-side with body-wave scaleX undulation
-  const { amplitude = 55, speed = 0.4, leanAngle = 10, waveFreq = 2.2 } = params;
+  // Fish/aquatic: side-to-side with lean rotation (no scale deformation)
+  const { amplitude = 55, speed = 0.4, leanAngle = 10 } = params;
   const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
     const x    = origin.x + amplitude * Math.sin(2 * Math.PI * t * speed);
     const lean = leanAngle * Math.cos(2 * Math.PI * t * speed);
-    // Body-wave: subtle scaleX oscillation simulates the fish's tail pushing side-to-side
-    const bodyWave = 1 + 0.1 * Math.sin(2 * Math.PI * t * waveFreq);
     agent.adapter.setPosition(x, origin.y);
     agent.adapter.setRotation(lean);
-    agent.adapter.setScaleXY(bodyWave, 1);
   });
 }
 

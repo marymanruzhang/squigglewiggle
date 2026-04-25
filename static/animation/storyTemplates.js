@@ -215,6 +215,28 @@ export const STORY_TEMPLATES = [
     ],
   },
 
+  // ── Bird + Cake ─────────────────────────────────────────────────────────
+  // Bird spots the cake, flies over with curiosity, pecks at it,
+  // cake wobbles in protest, bird bounces happily, then flies home.
+  {
+    id: 'bird_cake',
+    priority: 11,
+    radius: 280,
+    cooldown: 8000,
+    match: (a, b) => a.label === 'bird' && (b.label === 'cake' || b.hasTag?.('food')),
+    beats: [
+      { type: 'noticeTarget',      actor: 'source', params: { duration: 500 } },
+      { type: 'approachWithCurve', actor: 'source', params: { margin: 55, duration: 1500 } },
+      { type: 'pauseAndLook',      actor: 'source', params: { duration: 500 } },
+      { type: 'nibbleTarget',      actor: 'source', params: { bites: 3, duration: 900 } },
+      { type: 'reactWiggle',       actor: 'target', params: { duration: 700, amplitude: 14 } },
+      { type: 'happyBounce',       actor: 'source', params: { hops: 3, hopHeight: 20, duration: 700 } },
+      { type: 'reactBounce',       actor: 'target', params: { duration: 500 }, parallel: true },
+      { type: 'returnToIdle',      actor: 'source', params: { duration: 800 } },
+      { type: 'returnToIdle',      actor: 'target', params: { duration: 800 }, parallel: true },
+    ],
+  },
+
   // ── Fish + Pond / Ocean / River ─────────────────────────────────────────
   // Fish swims into the water zone, splashes, stays briefly, returns.
   {
@@ -438,35 +460,48 @@ export const STORY_TEMPLATES = [
   },
 
   // ── Any two mobile objects meet ───────────────────────────────────────────
+  // Full narrative: spot each other → approach → mutual surprise → inspect →
+  // both react → one retreats slightly → settle apart
   {
     id: 'two_mobiles_meet',
     priority: 2,
-    radius: 140,
-    cooldown: 5000,
+    radius: 180,
+    cooldown: 6000,
     match: (a, b) => a.hasTag?.('mobile') && b.hasTag?.('mobile'),
     beats: [
+      { type: 'noticeTarget',   actor: 'source', params: { duration: 400 } },
+      { type: 'pauseAndLook',   actor: 'target', params: { duration: 300 }, parallel: true },
+      { type: 'approachTarget', actor: 'source', params: { margin: 55, duration: 1000 } },
+      { type: 'reactSurprise',  actor: 'source', params: { duration: 350 } },
+      { type: 'reactSurprise',  actor: 'target', params: { duration: 350 }, parallel: true },
+      { type: 'sniffTarget',    actor: 'source', params: { cycles: 2, duration: 800 } },
+      { type: 'reactWiggle',    actor: 'target', params: { duration: 500, amplitude: 10 }, parallel: true },
+      { type: 'reactBounce',    actor: 'source', params: { duration: 500 } },
+      { type: 'reactBounce',    actor: 'target', params: { duration: 500 }, parallel: true },
+      { type: 'returnToIdle',   actor: 'source', params: { duration: 700 } },
+      { type: 'returnToIdle',   actor: 'target', params: { duration: 700 }, parallel: true },
+    ],
+  },
+
+  // ── Fallback: any two objects near each other ─────────────────────────────
+  // Even completely unknown pairs get a small story: one notices,
+  // approaches, they react to each other, then settle back home.
+  {
+    id: 'generic_proximity_react',
+    priority: 1,
+    radius: 140,
+    cooldown: 6000,
+    match: () => true, // catches everything
+    beats: [
       { type: 'noticeTarget',   actor: 'source', params: { duration: 350 } },
-      { type: 'approachTarget', actor: 'source', params: { margin: 60, duration: 900 } },
-      { type: 'reactBounce',    actor: 'source', params: { duration: 400 } },
-      { type: 'reactBounce',    actor: 'target', params: { duration: 400 }, parallel: true },
+      { type: 'approachTarget', actor: 'source', params: { margin: 65, duration: 900 } },
+      { type: 'reactWiggle',    actor: 'source', params: { duration: 450, amplitude: 8 } },
+      { type: 'reactWiggle',    actor: 'target', params: { duration: 600, amplitude: 10 }, parallel: true },
+      { type: 'reactBounce',    actor: 'source', params: { duration: 450 } },
       { type: 'returnToIdle',   actor: 'source', params: { duration: 600 } },
       { type: 'returnToIdle',   actor: 'target', params: { duration: 600 }, parallel: true },
     ],
   },
 
-  // ── Fallback: any two objects near each other ─────────────────────────────
-  {
-    id: 'generic_proximity_react',
-    priority: 1,
-    radius: 120,
-    cooldown: 6000,
-    match: () => true, // catches everything
-    beats: [
-      { type: 'reactWiggle', actor: 'source', params: { duration: 500, amplitude: 7 } },
-      { type: 'reactWiggle', actor: 'target', params: { duration: 500, amplitude: 7 }, parallel: true },
-      { type: 'returnToIdle', actor: 'source', params: { duration: 400 } },
-      { type: 'returnToIdle', actor: 'target', params: { duration: 400 }, parallel: true },
-    ],
-  },
-
 ];
+

@@ -385,16 +385,26 @@ function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
       }
       tctx.putImageData(od, 0, 0);
 
-      // ── Step 3: build Konva group with image + label ──────────────────────
+      // ── Step 3: build Konva group with fill + image + label ─────────────────
       const g = new Konva.Group({ x: cx, y: cy, draggable: true });
       g.setAttr('agentId', id);
 
-      // Sketch image centered at group origin
+      // White fill rect FIRST — makes the sketch opaque so when characters
+      // overlap, the one in front properly occludes the one behind
+      g.add(new Konva.Rect({
+        x: -size / 2, y: -size / 2,
+        width: size, height: size,
+        fill: '#f8f8f8',
+        cornerRadius: 6,
+      }));
+
+      // Sketch image on top of fill
       g.add(new Konva.Image({
         image: tmp,
         x: -size / 2, y: -size / 2,
         width: size, height: size,
       }));
+
 
       // Label pill sitting just below the sketch, centered horizontally
       const displayLabel = labelText.toLowerCase();
