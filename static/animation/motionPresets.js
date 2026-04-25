@@ -179,9 +179,13 @@ export function hover(agent, params = {}) {
 }
 
 export function flutter(agent, params = {}) {
-  // Butterfly/moth: organic figure-8 flight path (original smooth version)
-  // Reads agent.originPos each frame so wander can drift the home position
-  const { xFreq = 0.35, yFreq = 0.6, xAmp = 35, yAmp = 20 } = params;
+  // Butterfly/moth: organic figure-8 flight path + wing-flapping
+  // Reads agent.originPos each frame so wander can drift the home position.
+  // Wing flap is applied ONLY to the sketch image child — label pill is unaffected.
+  const { xFreq = 0.35, yFreq = 0.6, xAmp = 35, yAmp = 20,
+          wingFreq = 3.5, wingMin = 0.2 } = params;
+  // Grab the image child once; works for Konva groups
+  const imgNode = agent.adapter.ref?.findOne?.('Image') ?? null;
   return oneshotOrLoop(agent, params, t => {
     const origin = agent.originPos;   // dynamic — wander updates this
     const x = origin.x + xAmp * Math.sin(2 * Math.PI * t * xFreq)
@@ -191,19 +195,30 @@ export function flutter(agent, params = {}) {
     const r = 6 * Math.sin(2 * Math.PI * t * yFreq * 2);
     agent.adapter.setPosition(x, y);
     agent.adapter.setRotation(r);
+    // Wing beat: scaleX on image node only (doesn't affect label)
+    if (imgNode) {
+      const wing = wingMin + (1 - wingMin) * Math.abs(Math.sin(Math.PI * t * wingFreq));
+      imgNode.scaleX(wing);
+    }
   });
 }
 
 export function fly(agent, params = {}) {
-  // Bird: broad sweeping sine-wave path (original smooth version)
-  // Reads agent.originPos each frame so wander can drift the home position
-  const { xAmp = 85, yAmp = 20, speed = 0.4 } = params;
+  // Bird: broad sweeping sine-wave path + wing-beat on image child
+  const { xAmp = 85, yAmp = 20, speed = 0.4,
+          wingFreq = 4.0, wingMin = 0.55 } = params;
+  const imgNode = agent.adapter.ref?.findOne?.('Image') ?? null;
   return oneshotOrLoop(agent, params, t => {
     const origin = agent.originPos;   // dynamic — wander updates this
     const x = origin.x + xAmp * Math.sin(2 * Math.PI * t * speed);
     const y = origin.y + yAmp * Math.sin(4 * Math.PI * t * speed);
     agent.adapter.setPosition(x, y);
     agent.adapter.setRotation(4 * Math.cos(2 * Math.PI * t * speed));
+    // Wing beat: compress image horizontally to simulate folding wings
+    if (imgNode) {
+      const wing = wingMin + (1 - wingMin) * Math.abs(Math.sin(Math.PI * t * wingFreq));
+      imgNode.scaleX(wing);
+    }
   });
 }
 

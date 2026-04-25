@@ -116,13 +116,14 @@ export class AnimationController {
 
   /** Return agent to its original spawn position (not the wander-mutated originPos). */
   async returnToOrigin(agent, durationMs = 500) {
-    // Use spawnPos so agents always return to their fixed spawn positions,
-    // not wherever the wander engine last set originPos.
     const home = agent.spawnPos || agent.originPos;
     await this.moveTo(agent, home.x, home.y, durationMs);
     agent.adapter.setRotation(0);
     agent.adapter.setScale(1);
     agent.adapter.setOpacity(1);
+    // Reset any wing-flap scaleX left on the image child
+    const img = agent.adapter.ref?.findOne?.('Image');
+    if (img) img.scaleX(1);
   }
 
   isActive(agentId)  { return this._active.has(agentId); }

@@ -202,7 +202,19 @@ function markDone(pid, ctx) {
   const p = players[pid];
   if (!p.drawn || !p.label) return;
   p.done = true;
-  p.imageDataURL = ctx.canvas.toDataURL('image/png');
+
+  // Capture at CSS display size so the image matches what the user actually saw.
+  // Canvas internal buffer is 340×300, but CSS stretches it to fill its container.
+  const cvs  = ctx.canvas;
+  const rect = cvs.getBoundingClientRect();
+  const cssW = Math.round(rect.width)  || cvs.width;
+  const cssH = Math.round(rect.height) || cvs.height;
+  const norm = document.createElement('canvas');
+  norm.width  = cssW;
+  norm.height = cssH;
+  norm.getContext('2d').drawImage(cvs, 0, 0, cssW, cssH);
+  p.imageDataURL = norm.toDataURL('image/png');
+
   (pid === 1 ? done1El : done2El).textContent = `✓ ${p.label}`;
   updateStatus();
   if (players[1].done && players[2].done) beginStory();
