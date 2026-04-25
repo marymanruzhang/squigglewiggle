@@ -117,115 +117,146 @@ export function subtle_wiggle(agent, params = {}) {
 }
 
 // ─── Ground animal motions ────────────────────────────────────────────────────
-// All ground presets read agent.originPos dynamically so the wander engine can
-// steer them by just updating originPos. The preset drives its own position.
-
-/** Smoothly approach agent.originPos at pixelsPerSec, returns {dx,dy,dist,moved} */
-function _stepToward(agent, pxPerSec) {
-  const pos    = agent.adapter.getPosition();
-  const target = agent.originPos;
-  const dx = target.x - pos.x;
-  const dy = target.y - pos.y;
-  const dist = Math.hypot(dx, dy);
-  if (dist < 1) return { dx: 0, dy: 0, dist: 0, pos };
-  const step = Math.min(dist, pxPerSec / 60); // assume ~60fps
-  return {
-    dx, dy, dist,
-    pos: { x: pos.x + (dx / dist) * step, y: pos.y + (dy / dist) * step },
-  };
-}
+// Architecture: each ground preset tracks its own worldX/worldY (the animal's
+// true canvas position). The display position = world + animation overlay (bob,
+// arc, etc.). This separation prevents the "vertical drift" bug where adding
+// bob to getPosition() each frame causes dy to grow unboundedly.
+// Wander steers by updating agent.originPos; presets smoothly move worldX/worldY
+// toward that target while playing the walk/hop/prowl animation continuously.
 
 export function walk_bounce(agent, params = {}) {
-  // Dog/cat/sheep: walks toward originPos with step bob, body rock, and direction flip
-  const { speed = 0.4, bounceHeight = 9, stepFreq = 2.2, walkSpeed = 65 } = params;
+  const {
+    bounceHeight = 8, stepFreq = 2.2, walkSpeed = 70,
+    leanAmp = 5, speed = 0.4,   // speed kept for API compat, unused
+  } = params;
   const imgNode = agent.adapter.ref?.findOne?.('Image') ?? null;
-  let lastDx = 1; // track facing direction
+  let worldX = null, worldY = null, lastFacing = 1;
 
   return oneshotOrLoop(agent, params, t => {
-    const { dx, dy, dist, pos } = _stepToward(agent, walkSpeed);
-    const moving = dist > 4;
+    // Lazy-init world position from agent's current canvas position
+    if (worldX === null) {
+      const p = agent.adapter.getPosition();
+      worldX = p.x; worldY = p.y;
+    }
 
-    // Step bob — only when actually moving
-    const bob = moving ? -bounceHeight * Math.abs(Math.sin(Math.PI * t * stepFreq * 2)) : 0;
-    // Body rock — alternating lean gives weight-shift feel
-    const rock = moving ? 8 * Math.sin(2 * Math.PI * t * stepFreq) : 0;
+    const target = agent.originPos;
+    const dx = target.x - worldX;
+    const dy = target.y - worldY;
+    const dist = Math.hypot(dx, dy);
+    const moving = dist > 6;
 
-    agent.adapter.setPosition(pos.x, pos.y + bob);
+    // Move world position toward target at walk speed
+    if (moving) {
+      const step = Math.min(dist, walkSpeed / 60);
+      worldX += (dx / dist) * step;
+      worldY += (dy / dist) * step;
+    }
+
+    // Walk animation — always running (idle bob even when stationary)
+    const bobScale = moving ? 1.0 : 0.25;
+    const bob  = -bounceHeight * bobScale * Math.abs(Math.sin(Math.PI * t * stepFreq * 2));
+    const rock = leanAmp * bobScale * Math.sin(2 * Math.PI * t * stepFreq);
+
+    agent.adapter.setPosition(worldX, worldY + bob);
     agent.adapter.setRotation(rock);
 
-    // Flip image to face direction of travel (scaleX on image node only)
+    // Direction flip on image child (not whole group — label stays upright)
     if (imgNode && moving) {
       const facing = dx < 0 ? -1 : 1;
-      if (facing !== lastDx) { imgNode.scaleX(facing); lastDx = facing; }
-    }
-    // "Leg stride" illusion: compress image slightly on each step (weight shift)
-    if (imgNode && moving) {
-      const stride = 1 - 0.06 * Math.abs(Math.sin(Math.PI * t * stepFreq * 2));
-      imgNode.scaleY(stride);
+      if (facing !== lastFacing) { imgNode.scaleX(facing); lastFacing = facing; }
     }
   });
 }
 
 export function slow_walk(agent, params = {}) {
-  return walk_bounce(agent, { bounceHeight: 4, stepFreq: 1.4, walkSpeed: 35, speed: 0.22, ...params });
+  return walk_bounce(agent, { bounceHeight: 4, stepFreq: 1.4, walkSpeed: 35, leanAmp: 3, ...params });
 }
 
 export function hop(agent, params = {}) {
-  // Rabbit: parabolic hops toward originPos with squash/stretch on takeoff + landing
-  const { hopHeight = 30, hopSpeed = 0.7, hopWalkSpeed = 55 } = params;
+  // Rabbit: parabolic hops with squash/stretch on takeoff & landing
+  const { hopHeight = 28, hopSpeed = 0.75, walkSpeed = 55 } = params;
   const imgNode = agent.adapter.ref?.findOne?.('Image') ?? null;
-  let lastDx = 1;
+  let worldX = null, worldY = null, lastFacing = 1;
 
   return oneshotOrLoop(agent, params, t => {
-    const { dx, dy, dist, pos } = _stepToward(agent, hopWalkSpeed);
-    const moving = dist > 4;
+    if (worldX === null) {
+      const p = agent.adapter.getPosition();
+      worldX = p.x; worldY = p.y;
+    }
 
-    // Hop phase within each cycle
-    const phase = (t * hopSpeed) % 1;
-    const inAir = phase > 0.1 && phase < 0.9;
-    const arcY  = moving ? -hopHeight * Math.max(0, Math.sin(Math.PI * phase)) : 0;
+    const target = agent.originPos;
+    const dx = target.x - worldX;
+    const dy = target.y - worldY;
+    const dist = Math.hypot(dx, dy);
+    const moving = dist > 6;
 
-    agent.adapter.setPosition(pos.x, pos.y + arcY);
+    if (moving) {
+      const step = Math.min(dist, walkSpeed / 60);
+      worldX += (dx / dist) * step;
+      worldY += (dy / dist) * step;
+    }
 
-    // Squash on takeoff and landing, stretch at apex
+    // Parabolic hop arc
+    const phase  = (t * hopSpeed) % 1;
+    const inAir  = phase > 0.08 && phase < 0.92;
+    const arcY   = moving ? -hopHeight * Math.max(0, Math.sin(Math.PI * phase)) : 0;
+
+    agent.adapter.setPosition(worldX, worldY + arcY);
+
+    // Squash on landing, stretch at apex — image child only
     if (imgNode) {
       let sx = 1, sy = 1;
-      if (!inAir) {
-        sx = 1.25; sy = 0.78; // squash
-      } else if (phase > 0.4 && phase < 0.6) {
-        sx = 0.82; sy = 1.22; // stretch at apex
+      if (!inAir && moving) {
+        sx = 1.3; sy = 0.75; // wide squash on landing
+      } else if (phase > 0.4 && phase < 0.6 && moving) {
+        sx = 0.82; sy = 1.22; // tall stretch at apex
       }
-      imgNode.scaleX(dx < 0 && moving ? -sx : sx);
+      const facing = (dx < 0 && moving) ? -1 : 1;
+      if (facing !== lastFacing) lastFacing = facing;
+      imgNode.scaleX(lastFacing * sx);
       imgNode.scaleY(sy);
     }
   });
 }
 
 export function scurry(agent, params = {}) {
-  return walk_bounce(agent, { bounceHeight: 4, stepFreq: 4.5, walkSpeed: 120, speed: 1.2, ...params });
+  return walk_bounce(agent, { bounceHeight: 3, stepFreq: 5, walkSpeed: 130, leanAmp: 3, ...params });
 }
 
 export function prowl(agent, params = {}) {
-  // Cat: slow stealthy stalk — low to ground, tail swish implied by lean
+  // Cat: silent, low, smooth stalk
   const { walkSpeed = 40 } = params;
   const imgNode = agent.adapter.ref?.findOne?.('Image') ?? null;
-  let lastDx = 1;
+  let worldX = null, worldY = null, lastFacing = 1;
 
   return oneshotOrLoop(agent, params, t => {
-    const { dx, dy, dist, pos } = _stepToward(agent, walkSpeed);
-    const moving = dist > 4;
+    if (worldX === null) {
+      const p = agent.adapter.getPosition();
+      worldX = p.x; worldY = p.y;
+    }
 
-    // Very subtle bob — cats walk smoothly
-    const bob = moving ? -3 * Math.abs(Math.sin(Math.PI * t * 1.8 * 2)) : 0;
-    // Lean forward when stalking
-    const lean = moving ? 4 * Math.sin(2 * Math.PI * t * 1.8) : 0;
+    const target = agent.originPos;
+    const dx = target.x - worldX;
+    const dy = target.y - worldY;
+    const dist = Math.hypot(dx, dy);
+    const moving = dist > 6;
 
-    agent.adapter.setPosition(pos.x, pos.y + bob);
+    if (moving) {
+      const step = Math.min(dist, walkSpeed / 60);
+      worldX += (dx / dist) * step;
+      worldY += (dy / dist) * step;
+    }
+
+    // Cats are smooth — very subtle bob, gentle lean
+    const bob  = -2.5 * Math.abs(Math.sin(Math.PI * t * 1.8 * 2)) * (moving ? 1 : 0.2);
+    const lean =  3   * Math.sin(2 * Math.PI * t * 1.8)           * (moving ? 1 : 0.2);
+
+    agent.adapter.setPosition(worldX, worldY + bob);
     agent.adapter.setRotation(lean);
 
     if (imgNode && moving) {
       const facing = dx < 0 ? -1 : 1;
-      if (facing !== lastDx) { imgNode.scaleX(facing); lastDx = facing; }
+      if (facing !== lastFacing) { imgNode.scaleX(facing); lastFacing = facing; }
     }
   });
 }
@@ -233,16 +264,15 @@ export function prowl(agent, params = {}) {
 // ─── Flying animal motions ────────────────────────────────────────────────────
 
 export function hover(agent, params = {}) {
-  // Bee/dragonfly: tight figure-8 hover with rapid wing buzz on image child
-  const { hoverHeight = 6, speed = 0.55, xDrift = 8, wingFreq = 8, wingMin = 0.45 } = params;
+  // Bee/dragonfly: figure-8 hover + fast wing buzz on image child
+  const { hoverHeight = 6, speed = 0.55, xDrift = 8, wingFreq = 8, wingMin = 0.4 } = params;
   const imgNode = agent.adapter.ref?.findOne?.('Image') ?? null;
 
   return oneshotOrLoop(agent, params, t => {
-    const origin = agent.originPos;
+    const origin = agent.originPos;  // dynamic — wander updates this
     const y = origin.y + hoverHeight * Math.sin(2 * Math.PI * t * speed);
     const x = origin.x + xDrift    * Math.sin(2 * Math.PI * t * speed * 0.7);
     agent.adapter.setPosition(x, y);
-    // Very fast wing buzz (bees flap ~200Hz, we fake it at 8Hz visually)
     if (imgNode) {
       const wing = wingMin + (1 - wingMin) * Math.abs(Math.sin(Math.PI * t * wingFreq));
       imgNode.scaleX(wing);
