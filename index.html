@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Inventor's Whiteboard</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', sans-serif;
+    background: #f8f5f0;
+    width: 100vw; height: 100vh;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  #app {
+    position: relative;
+    width: 100vw; height: 100vh;
+  }
+
+  /* Camera PiP */
+  #camera-pip {
+    position: fixed;
+    bottom: 16px; right: 16px;
+    width: 180px; height: 120px;
+    border-radius: 12px;
+    overflow: hidden;
+    border: 2px solid #ddd;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+    z-index: 100;
+    background: #000;
+  }
+  #camera-video {
+    width: 100%; height: 100%;
+    object-fit: cover;
+    transform: scaleX(-1);
+  }
+  #pip-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  #pip-label {
+    position: absolute;
+    bottom: 4px; left: 6px;
+    font-size: 10px; color: #fff;
+    background: rgba(0,0,0,0.5);
+    padding: 2px 6px;
+    border-radius: 4px;
+  }
+
+  /* Status bar */
+  #status-bar {
+    position: fixed;
+    top: 12px; left: 50%;
+    transform: translateX(-50%);
+    background: rgba(0,0,0,0.75);
+    color: #fff;
+    font-size: 13px;
+    padding: 6px 18px;
+    border-radius: 20px;
+    z-index: 200;
+    transition: opacity 0.4s;
+  }
+
+  /* Main canvas */
+  #draw-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    cursor: crosshair;
+    touch-action: none;
+  }
+
+  /* Zone overlays */
+  .zone {
+    position: absolute;
+    top: 0;
+    width: 50%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    transition: opacity 0.5s;
+    opacity: 0;
+  }
+  .zone.active { opacity: 1; pointer-events: all; }
+  #zone-left { left: 0; border-right: 1px dashed #ccc; }
+  #zone-right { right: 0; }
+
+  .zone-prompt {
+    font-size: 16px;
+    color: #333;
+    text-align: center;
+    font-style: italic;
+    line-height: 1.5;
+    margin-bottom: 12px;
+    font-family: 'Georgia', serif;
+    transition: opacity 0.6s ease;
+  }
+  /* After I'm Done: fade out text prompt, keep SVG */
+  .zone.submitted .zone-prompt {
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .cloud-svg {
+    width: 140px;
+    height: 90px;
+    margin-bottom: 8px;
+  }
+
+  .draw-area-hint {
+    font-size: 12px;
+    color: #aaa;
+    margin-top: 8px;
+  }
+
+  .done-btn {
+    position: fixed;
+    bottom: 72px;
+    background: #2d6a4f;
+    color: #fff;
+    border: none;
+    padding: 10px 28px;
+    border-radius: 24px;
+    font-size: 15px;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(45,106,79,0.35);
+    transition: transform 0.15s, background 0.2s;
+    display: none;
+    z-index: 300;
+  }
+  #done-left  { left:  12.5%; transform: translateX(-50%); }
+  #done-right { left:  75%;   transform: translateX(-50%); }
+  .done-btn:hover { transform: translateX(-50%) scale(1.05); background: #1b4332; }
+  .done-btn.visible { display: block; }
+  .done-btn:disabled { background: #888; cursor: default; }
+
+  /* Result overlay per zone */
+  .zone-result {
+    position: fixed;
+    bottom: 130px;
+    background: rgba(255,255,255,0.95);
+    border: 2px solid #2d6a4f;
+    border-radius: 12px;
+    padding: 10px 18px;
+    font-size: 14px;
+    text-align: center;
+    line-height: 1.6;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.1);
+    display: none;
+    max-width: 200px;
+  }
+  .zone-result.visible { display: block; }
+  .result-category { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .result-label { font-size: 18px; font-weight: 700; color: #1b4332; }
+
+  #result-left  { left:  12.5%; transform: translateX(-50%); }
+  #result-right { left:  75%;   transform: translateX(-50%); }
+
+  /* Loading spinner */
+  .spinner {
+    display: none;
+    position: fixed;
+    bottom: 130px;
+  }
+  #spinner-left  { left:  12.5%; transform: translateX(-50%); }
+  #spinner-right { left:  75%;   transform: translateX(-50%); }
+  .spinner.visible { display: block; }
+  .spinner-circle {
+    width: 36px; height: 36px;
+    border: 3px solid #ddd;
+    border-top-color: #2d6a4f;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Welcome screen */
+  #welcome {
+    position: fixed;
+    inset: 0;
+    background: linear-gradient(135deg, #f8f5f0 0%, #e8f4f0 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 500;
+    gap: 16px;
+  }
+  #welcome h1 {
+    font-size: 32px;
+    font-family: 'Georgia', serif;
+    color: #1b4332;
+    text-align: center;
+  }
+  #welcome p { font-size: 15px; color: #555; text-align: center; max-width: 400px; line-height: 1.6; }
+  #start-btn {
+    margin-top: 12px;
+    background: #2d6a4f;
+    color: #fff;
+    border: none;
+    padding: 14px 36px;
+    border-radius: 28px;
+    font-size: 16px;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(45,106,79,0.35);
+    transition: transform 0.15s;
+  }
+  #start-btn:hover { transform: scale(1.04); }
+
+  /* Per-zone toolbars */
+  .zone-toolbar {
+    position: fixed;
+    bottom: 20px;
+    display: flex;
+    gap: 9px;
+    background: rgba(255,255,255,0.95);
+    backdrop-filter: blur(8px);
+    border-radius: 36px;
+    padding: 9px 18px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.13);
+    z-index: 400;
+    align-items: center;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease;
+  }
+  .zone-toolbar.active {
+    opacity: 1;
+    pointer-events: all;
+  }
+  #toolbar-left  { left: 25%; transform: translateX(-50%); }
+  #toolbar-right { left: 75%; transform: translateX(-50%); }
+
+  .color-swatch {
+    width: 26px; height: 26px;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2.5px solid transparent;
+    transition: transform 0.15s, border-color 0.15s;
+    flex-shrink: 0;
+  }
+  .color-swatch:hover { transform: scale(1.2); }
+  .color-swatch.selected { border-color: #333; transform: scale(1.2); }
+  .size-btn {
+    background: none; border: 1px solid #ccc; border-radius: 8px;
+    padding: 3px 8px; cursor: pointer; font-size: 12px;
+    transition: background 0.15s;
+  }
+  .size-btn:hover { background: #eee; }
+  .size-btn.selected { background: #2d6a4f; color: #fff; border-color: #2d6a4f; }
+  .toolbar-sep { width: 1px; height: 24px; background: #ddd; margin: 0 2px; flex-shrink: 0; }
+  .eraser-btn {
+    background: none; border: 1px solid #ccc; border-radius: 8px;
+    padding: 3px 10px; cursor: pointer; font-size: 13px;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .eraser-btn:hover { background: #fee; border-color: #e55; }
+  .eraser-btn.selected { background: #fee; border-color: #e55; }
+  .undo-btn {
+    background: none; border: 1px solid #ccc; border-radius: 8px;
+    padding: 3px 10px; cursor: pointer; font-size: 13px;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .undo-btn:hover { background: #f0f0ff; border-color: #99a; }
+  .undo-btn:disabled { opacity: 0.3; cursor: default; }
+
+  #save-all-btn {
+    position: fixed;
+    top: 16px; right: 16px;
+    background: #1a6496;
+    color: #fff; border: none;
+    padding: 8px 18px; border-radius: 20px;
+    font-size: 13px; cursor: pointer;
+    box-shadow: 0 4px 12px rgba(26,100,150,0.3);
+    display: none;
+    transition: transform 0.15s;
+    z-index: 250;
+  }
+  #save-all-btn:hover { transform: scale(1.04); }
+  #save-all-btn.visible { display: block; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Welcome -->
+  <div id="welcome">
+    <svg width="80" height="52" viewBox="0 0 120 78"><path d="M100,54 C110,54 118,46 118,36 C118,27 111,20 102,20 C99,9 89,2 77,2 C64,2 53,11 51,23 C48,21 44,20 40,20 C29,20 20,29 20,40 C20,51 29,60 40,60 L100,60 Z" fill="#dce8f0" stroke="#a0bfcf" stroke-width="2"/></svg>
+    <h1>Inventor's Whiteboard</h1>
+    <p>Step in front of the camera, and transform a cloud into something new. Up to 2 inventors can draw simultaneously.</p>
+    <button id="start-btn">Start Experience →</button>
+  </div>
+
+  <!-- Camera PiP -->
+  <div id="camera-pip">
+    <video id="camera-video" autoplay muted playsinline></video>
+    <canvas id="pip-canvas"></canvas>
+    <div id="pip-label">🔴 Live</div>
+  </div>
+
+  <!-- Status -->
+  <div id="status-bar">Initializing…</div>
+
+  <!-- Left Zone -->
+  <div class="zone" id="zone-left">
+    <div class="zone-prompt">As an inventor,<br>what else could this shape be?</div>
+    <svg class="cloud-svg" viewBox="0 0 230 140" width="230" height="140">
+      <!-- Mountain silhouette outline -->
+      <path d="
+        M 12,125
+        L 65,28
+        L 90,62
+        L 115,6
+        L 141,62
+        L 168,36
+        L 218,125
+        Z
+      " fill="none" stroke="#222" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>
+  </div>
+
+  <!-- Right Zone -->
+  <div class="zone" id="zone-right">
+    <div class="zone-prompt">As an inventor,<br>what else could this shape be?</div>
+    <svg class="cloud-svg" viewBox="0 0 230 140" width="230" height="140">
+      <!-- Mountain silhouette outline -->
+      <path d="
+        M 12,125
+        L 65,28
+        L 90,62
+        L 115,6
+        L 141,62
+        L 168,36
+        L 218,125
+        Z
+      " fill="none" stroke="#222" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>
+    </svg>
+  </div>
+
+  <!-- Main drawing canvas -->
+  <canvas id="draw-canvas"></canvas>
+
+  <!-- Buttons & results — rendered AFTER canvas so they sit on top -->
+  <div class="spinner" id="spinner-left"><div class="spinner-circle"></div></div>
+  <div class="spinner" id="spinner-right"><div class="spinner-circle"></div></div>
+  <div class="zone-result" id="result-left">
+    <div class="result-category" id="cat-left"></div>
+    <div class="result-label" id="label-left"></div>
+  </div>
+  <div class="zone-result" id="result-right">
+    <div class="result-category" id="cat-right"></div>
+    <div class="result-label" id="label-right"></div>
+  </div>
+  <button class="done-btn" id="done-left">✓ I'm Done</button>
+  <button class="done-btn" id="done-right">✓ I'm Done</button>
+
+  <!-- Left toolbar -->
+  <div class="zone-toolbar" id="toolbar-left">
+    <div class="color-swatch selected" data-zone="left" data-color="#1a1a1a" style="background:#1a1a1a"></div>
+    <div class="color-swatch" data-zone="left" data-color="#e63946" style="background:#e63946"></div>
+    <div class="color-swatch" data-zone="left" data-color="#2196F3" style="background:#2196F3"></div>
+    <div class="color-swatch" data-zone="left" data-color="#4CAF50" style="background:#4CAF50"></div>
+    <div class="color-swatch" data-zone="left" data-color="#FF9800" style="background:#FF9800"></div>
+    <div class="color-swatch" data-zone="left" data-color="#9C27B0" style="background:#9C27B0"></div>
+    <div class="toolbar-sep"></div>
+    <button class="size-btn" data-zone="left" data-size="3">S</button>
+    <button class="size-btn selected" data-zone="left" data-size="6">M</button>
+    <button class="size-btn" data-zone="left" data-size="12">L</button>
+    <div class="toolbar-sep"></div>
+    <button class="eraser-btn" id="eraser-left">⌫ Erase</button>
+    <button class="undo-btn" id="undo-left" title="Undo last stroke">↩ Undo</button>
+  </div>
+
+  <!-- Right toolbar -->
+  <div class="zone-toolbar" id="toolbar-right">
+    <div class="color-swatch selected" data-zone="right" data-color="#1a1a1a" style="background:#1a1a1a"></div>
+    <div class="color-swatch" data-zone="right" data-color="#e63946" style="background:#e63946"></div>
+    <div class="color-swatch" data-zone="right" data-color="#2196F3" style="background:#2196F3"></div>
+    <div class="color-swatch" data-zone="right" data-color="#4CAF50" style="background:#4CAF50"></div>
+    <div class="color-swatch" data-zone="right" data-color="#FF9800" style="background:#FF9800"></div>
+    <div class="color-swatch" data-zone="right" data-color="#9C27B0" style="background:#9C27B0"></div>
+    <div class="toolbar-sep"></div>
+    <button class="size-btn" data-zone="right" data-size="3">S</button>
+    <button class="size-btn selected" data-zone="right" data-size="6">M</button>
+    <button class="size-btn" data-zone="right" data-size="12">L</button>
+    <div class="toolbar-sep"></div>
+    <button class="eraser-btn" id="eraser-right">⌫ Erase</button>
+    <button class="undo-btn" id="undo-right" title="Undo last stroke">↩ Undo</button>
+  </div>
+
+  <button id="save-all-btn">💾 Save Results</button>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
