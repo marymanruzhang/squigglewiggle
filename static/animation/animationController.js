@@ -23,6 +23,8 @@ export class AnimationController {
 
   /** Start the agent's default idle animation (loops until stopped). */
   startIdle(agent) {
+    // Cancel any previous animation — including wander travel RAF loops
+    agent.cancelIdle?.();
     this.stop(agent.id);
     const preset = getPreset(agent.defaultMotion);
     const cancel = preset(agent, { ...agent.motionParams });

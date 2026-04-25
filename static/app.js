@@ -385,20 +385,96 @@ function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
       }
       tctx.putImageData(od, 0, 0);
 
-      // ── Step 3: build Konva group with fill + image + label ─────────────────
+      // ── Step 2b: smart flood-fill enclosed regions ───────────────────────
+      // Pick a soft pastel fill color per label for personality
+      const FILL_COLORS = {
+        butterfly: [180, 140, 220, 130], moth: [160, 130, 200, 120],
+        bird: [255, 210, 120, 120],      parrot: [100, 200, 140, 130],
+        fish: [100, 180, 230, 120],      whale: [80, 160, 210, 110],
+        octopus: [190, 130, 200, 120],   shark: [130, 160, 200, 110],
+        flower: [255, 170, 190, 120],    rose: [240, 120, 140, 130],
+        tree: [130, 200, 130, 110],      grass: [140, 210, 140, 100],
+        cat: [230, 190, 150, 110],       dog: [220, 185, 145, 110],
+        rabbit: [230, 215, 205, 110],    sheep: [220, 220, 215, 110],
+        sun: [255, 230, 100, 120],       cloud: [210, 225, 240, 110],
+        cake: [255, 210, 180, 120],      pizza: [255, 200, 140, 120],
+        house: [210, 190, 170, 110],     car: [160, 190, 230, 110],
+      };
+      const lk = labelText.toLowerCase();
+      const fc = FILL_COLORS[lk] || [230, 220, 210, 100]; // warm cream default
+
+      // Build ink mask (1 = ink, 0 = empty)
+      const W2 = cw, H2 = ch;
+      const fresh = tctx.getImageData(0, 0, W2, H2);
+      const px = fresh.data;
+      const INK = 160; // darkness threshold for "ink"
+      const mask = new Uint8Array(W2 * H2); // 0=empty, 1=ink
+      for (let i = 0; i < W2 * H2; i++) {
+        const idx = i * 4;
+        const br = (px[idx] + px[idx+1] + px[idx+2]) / 3;
+        const a  = px[idx+3];
+        mask[i] = (a > 60 && br < INK) ? 1 : 0;
+      }
+
+      // Dilate ink by 2px to seal gaps in hand-drawn lines
+      const dilated = new Uint8Array(mask);
+      const DILATION = 2;
+      for (let pass = 0; pass < DILATION; pass++) {
+        const prev = new Uint8Array(dilated);
+        for (let y = 1; y < H2 - 1; y++) {
+          for (let x = 1; x < W2 - 1; x++) {
+            if (prev[y * W2 + x]) {
+              dilated[(y-1)*W2+x] = 1; dilated[(y+1)*W2+x] = 1;
+              dilated[y*W2+(x-1)] = 1; dilated[y*W2+(x+1)] = 1;
+            }
+          }
+        }
+      }
+
+      // BFS flood-fill from all border pixels → marks "outside"
+      const outside = new Uint8Array(W2 * H2);
+      const queue = [];
+      for (let x = 0; x < W2; x++) {
+        if (!dilated[x])              { outside[x] = 1;              queue.push(x); }
+        if (!dilated[(H2-1)*W2+x])   { outside[(H2-1)*W2+x] = 1;   queue.push((H2-1)*W2+x); }
+      }
+      for (let y = 0; y < H2; y++) {
+        if (!dilated[y*W2])           { outside[y*W2] = 1;           queue.push(y*W2); }
+        if (!dilated[y*W2+(W2-1)])    { outside[y*W2+(W2-1)] = 1;    queue.push(y*W2+(W2-1)); }
+      }
+      let qi = 0;
+      const dirs4 = [-1, 1, -W2, W2];
+      while (qi < queue.length) {
+        const cur = queue[qi++];
+        const cx2 = cur % W2, cy2 = Math.floor(cur / W2);
+        for (const d of dirs4) {
+          const nxt = cur + d;
+          if (nxt < 0 || nxt >= W2 * H2) continue;
+          const nx2 = nxt % W2;
+          // Prevent horizontal wrap-around
+          if (Math.abs(cx2 - nx2) > 1) continue;
+          if (!outside[nxt] && !dilated[nxt]) { outside[nxt] = 1; queue.push(nxt); }
+        }
+      }
+
+      // Paint enclosed interior pixels with the pastel fill color
+      // Only paint pixels that were originally empty (not ink)
+      for (let i = 0; i < W2 * H2; i++) {
+        if (!outside[i] && !mask[i]) {
+          const idx = i * 4;
+          px[idx]   = fc[0];
+          px[idx+1] = fc[1];
+          px[idx+2] = fc[2];
+          px[idx+3] = fc[3];
+        }
+      }
+      tctx.putImageData(fresh, 0, 0);
+
+      // ── Step 3: build Konva group (image already has fill baked in) ──────
       const g = new Konva.Group({ x: cx, y: cy, draggable: true });
       g.setAttr('agentId', id);
 
-      // White fill rect FIRST — makes the sketch opaque so when characters
-      // overlap, the one in front properly occludes the one behind
-      g.add(new Konva.Rect({
-        x: -size / 2, y: -size / 2,
-        width: size, height: size,
-        fill: '#f8f8f8',
-        cornerRadius: 6,
-      }));
-
-      // Sketch image on top of fill
+      // Sketch image (with baked-in fill for enclosed regions)
       g.add(new Konva.Image({
         image: tmp,
         x: -size / 2, y: -size / 2,

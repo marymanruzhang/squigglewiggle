@@ -64,6 +64,15 @@ export class InteractionEngine {
   // Mobile agents that are idle are given random waypoints so they traverse
   // the canvas. When near a potential story partner, they are nudged toward
   // that partner so the story trigger feels natural rather than teleported.
+  //
+  // NOTE: Agents using self-moving idle presets (flutter, fly, swim, hover,
+  // drift) do NOT wander — their idle animation already handles movement.
+  // Giving them wander waypoints would fight with the preset's own RAF loop.
+
+  // Presets that move the agent themselves — skip wander travel for these
+  static SELF_MOVING_PRESETS = new Set([
+    'flutter', 'fly', 'swim', 'slow_swim', 'hover', 'drift', 'wave',
+  ]);
 
   _tickWander(agents) {
     const now = Date.now();
@@ -72,6 +81,9 @@ export class InteractionEngine {
     for (const agent of agents) {
       if (!agent.hasTag('mobile')) continue;
       if (agent.state !== 'idle') continue;
+
+      // Don't wander agents whose idle preset is their movement
+      if (InteractionEngine.SELF_MOVING_PRESETS.has(agent.defaultMotion)) continue;
 
       // First-time init
       if (!agent._wander) {
@@ -106,6 +118,7 @@ export class InteractionEngine {
       });
     }
   }
+
 
   /** rAF-based constant-speed move for wander travel. */
   _wanderMoveTo(agent, tx, ty, pxPerSec) {
