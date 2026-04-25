@@ -390,3 +390,227 @@ canvas {
     .vs-divider    { flex-direction: row; padding: 12px 0; min-width: auto; }
     .glass-panel   { padding: 24px 16px; }
 }
+
+/* ══════════════════════════════════════════════════════════
+   PHASE MANAGEMENT
+   ══════════════════════════════════════════════════════════ */
+.hidden { display: none !important; }
+
+.draw-phase  { animation: fadeIn 0.4s ease; }
+.stage-phase { animation: fadeIn 0.5s ease; }
+
+/* ── Canvas (override width for new layout) ──────────────── */
+canvas {
+    display: block;
+    background: #fff;
+    touch-action: none;
+    width: 100%;
+    height: auto;
+    border-radius: 12px;
+}
+.canvas-wrap {
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    box-shadow: 0 6px 24px rgba(0,0,0,.35);
+    transition: transform .2s ease, box-shadow .2s ease;
+    cursor: crosshair;
+}
+.canvas-wrap:hover { transform: scale(1.012); box-shadow: 0 10px 32px rgba(0,0,0,.45); }
+
+/* ── Label input row ─────────────────────────────────────── */
+.label-row {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.label-input {
+    width: 100%;
+    padding: 10px 16px;
+    border-radius: var(--radius-md);
+    border: 1.5px solid rgba(255,255,255,0.12);
+    background: rgba(15, 23, 42, 0.75);
+    color: var(--text);
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.95rem;
+    font-weight: 500;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+    letter-spacing: 0.01em;
+}
+.label-input::placeholder { color: #4b5563; }
+.label-input:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 3px var(--primary-glow);
+}
+
+.label-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-top: 6px;
+    min-height: 0;
+}
+
+.suggest-chip {
+    font-family: 'Outfit', sans-serif;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 4px 11px;
+    border-radius: 20px;
+    border: 1px solid rgba(124, 58, 237, 0.4);
+    background: rgba(124, 58, 237, 0.12);
+    color: #c4b5fd;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.suggest-chip:hover {
+    background: rgba(124, 58, 237, 0.3);
+    border-color: var(--primary);
+    color: #ede9fe;
+}
+
+/* ══════════════════════════════════════════════════════════
+   STORY STAGE PHASE
+   ══════════════════════════════════════════════════════════ */
+
+/* ── Story header: pair name + beat timeline ──────────────── */
+.story-header {
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 14px;
+    padding: 12px 20px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    flex-wrap: wrap;
+    min-height: 52px;
+}
+
+.story-pair-label {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 1.05rem;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.p1-name {
+    background: linear-gradient(135deg, var(--p1), #818cf8);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.p2-name {
+    background: linear-gradient(135deg, var(--p2), #fbbf24);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+}
+.story-vs {
+    color: #6b7280;
+    font-size: 0.9rem;
+}
+
+.beat-timeline {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    flex: 1;
+    align-items: center;
+    min-height: 28px;
+}
+
+.beat-chip {
+    font-size: 0.65rem;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.05);
+    border: 1px solid rgba(255,255,255,0.1);
+    color: #4b5563;
+    transition: all 0.3s;
+    white-space: nowrap;
+}
+.beat-chip.active {
+    background: rgba(99,102,241,0.25);
+    border-color: #6366f1;
+    color: #c7d2fe;
+    box-shadow: 0 0 10px rgba(99,102,241,0.35);
+    animation: chipPulse 0.9s infinite;
+}
+.beat-chip.done {
+    background: rgba(16,185,129,0.15);
+    border-color: #10b981;
+    color: #6ee7b7;
+}
+@keyframes chipPulse {
+    0%,100% { opacity: 1; } 50% { opacity: 0.65; }
+}
+
+/* ── The live Konva canvas wrapper ────────────────────────── */
+.story-stage-wrap {
+    position: relative;
+    width: 100%;
+    height: 420px;
+    border-radius: var(--radius-lg);
+    background: #f8f9fc;
+    background-image: radial-gradient(circle, #dde2ec 1px, transparent 1px);
+    background-size: 26px 26px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+}
+
+.story-stage-inner {
+    width: 100%;
+    height: 100%;
+}
+
+/* ── Floating agent state badges ──────────────────────────── */
+.swbadge {
+    position: absolute;
+    pointer-events: none;
+    white-space: nowrap;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    z-index: 10;
+}
+.swbadge-label {
+    font-size: 10px;
+    font-weight: 800;
+    background: rgba(0,0,0,0.65);
+    color: #fff;
+    padding: 2px 7px;
+    border-radius: 5px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+.swbadge-state {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    transition: all 0.3s;
+    letter-spacing: 0.02em;
+}
+.swbadge-state.idle         { background: #1e293b; color: #64748b; }
+.swbadge-state.story_active { background: #312e81; color: #c7d2fe;
+    box-shadow: 0 0 8px rgba(99,102,241,0.5); animation: chipPulse 1s infinite; }
+.swbadge-state.returning    { background: #064e3b; color: #6ee7b7; }
+
+/* ── Stage controls ───────────────────────────────────────── */
+.stage-controls {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+    justify-content: center;
+}
+.stage-controls .btn {
+    flex: 0 0 auto;
+    padding: 10px 28px;
+    font-size: 0.88rem;
+}
+

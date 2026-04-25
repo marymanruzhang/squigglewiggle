@@ -1,108 +1,156 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SquiggleWiggle AI — Collaborative Sketch Canvas</title>
-    <meta name="description" content="Two players sketch on separate canvases. The AI recognises each drawing, animates it, then the two characters interact!">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="static/style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SquiggleWiggle — Draw & Animate</title>
+  <meta name="description" content="Two players draw, label their sketch, and watch their characters meet in a living story world.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="static/style.css">
 </head>
 <body>
-    <div class="background-orbs" aria-hidden="true">
-        <div class="orb orb-1"></div>
-        <div class="orb orb-2"></div>
-        <div class="orb orb-3"></div>
+
+<div class="background-orbs" aria-hidden="true">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+
+<main class="glass-panel">
+
+  <!-- ── Header ──────────────────────────────────────────────── -->
+  <header>
+    <h1>SquiggleWiggle<span class="gradient-text">.ai</span></h1>
+    <p>Draw something · give it a name · watch the story unfold</p>
+  </header>
+
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 1: DRAWING
+       ══════════════════════════════════════════════════════════ -->
+  <section id="drawPhase" class="draw-phase">
+    <div class="players-row">
+
+      <!-- Player 1 -->
+      <div class="player-panel" id="panel1">
+        <div class="player-header">
+          <span class="player-badge p1-badge">Player 1</span>
+          <span class="done-indicator" id="done1"></span>
+        </div>
+
+        <div class="canvas-wrap" id="canvasWrap1">
+          <canvas id="canvas1" width="340" height="300"
+                  aria-label="Player 1 drawing canvas"></canvas>
+        </div>
+
+        <!-- Label input row -->
+        <div class="label-row" id="labelRow1">
+          <input
+            type="text"
+            id="labelInput1"
+            class="label-input"
+            placeholder="What did you draw? (e.g. flower)"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <div class="label-suggestions" id="suggestions1"></div>
+        </div>
+
+        <div class="canvas-tools">
+          <button id="clearBtn1" class="btn secondary" aria-label="Clear Player 1 canvas">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+            </svg>
+            Clear
+          </button>
+          <button id="doneBtn1" class="btn primary" aria-label="Player 1 done drawing"
+                  disabled>✓ Ready!</button>
+        </div>
+      </div>
+
+      <!-- VS divider -->
+      <div class="vs-divider" aria-hidden="true"><span>VS</span></div>
+
+      <!-- Player 2 -->
+      <div class="player-panel" id="panel2">
+        <div class="player-header">
+          <span class="player-badge p2-badge">Player 2</span>
+          <span class="done-indicator" id="done2"></span>
+        </div>
+
+        <div class="canvas-wrap" id="canvasWrap2">
+          <canvas id="canvas2" width="340" height="300"
+                  aria-label="Player 2 drawing canvas"></canvas>
+        </div>
+
+        <!-- Label input row -->
+        <div class="label-row" id="labelRow2">
+          <input
+            type="text"
+            id="labelInput2"
+            class="label-input"
+            placeholder="What did you draw? (e.g. butterfly)"
+            autocomplete="off"
+            spellcheck="false"
+          >
+          <div class="label-suggestions" id="suggestions2"></div>
+        </div>
+
+        <div class="canvas-tools">
+          <button id="clearBtn2" class="btn secondary" aria-label="Clear Player 2 canvas">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+                 stroke="currentColor" stroke-width="2">
+              <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+            </svg>
+            Clear
+          </button>
+          <button id="doneBtn2" class="btn primary" aria-label="Player 2 done drawing"
+                  disabled>✓ Ready!</button>
+        </div>
+      </div>
+
+    </div><!-- /players-row -->
+
+    <!-- Status line -->
+    <div class="status-bar" id="statusBar" role="status" aria-live="polite">
+      <span id="statusMsg">Both players: draw something, name it, then press ✓ Ready!</span>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════════════════
+       PHASE 2: STORY STAGE
+       ══════════════════════════════════════════════════════════ -->
+  <section id="stagePhase" class="stage-phase hidden">
+
+    <!-- Story header: pair + beat timeline -->
+    <div class="story-header" id="storyHeader">
+      <div class="story-pair-label" id="storyPairLabel">
+        <span class="p1-name" id="p1Name">—</span>
+        <span class="story-vs">✦</span>
+        <span class="p2-name" id="p2Name">—</span>
+      </div>
+      <div class="beat-timeline" id="beatTimeline"></div>
     </div>
 
-    <main class="glass-panel">
-        <header>
-            <h1>SquiggleWiggle<span class="gradient-text">.ai</span></h1>
-            <p>Two players · one canvas · infinite animations</p>
-        </header>
+    <!-- Live Konva canvas -->
+    <div id="storyStage" class="story-stage-wrap">
+      <div class="story-stage-inner" id="storyStageInner"></div>
 
-        <!-- ── Player canvases ─────────────────────────────────────────── -->
-        <section class="players-row" aria-label="Drawing canvases">
+      <!-- Floating agent state badges (appended dynamically) -->
+    </div>
 
-            <!-- Player 1 -->
-            <div class="player-panel" id="panel1">
-                <div class="player-header">
-                    <span class="player-badge p1-badge">Player 1</span>
-                    <span class="done-indicator" id="done1" aria-live="polite"></span>
-                </div>
-                <div class="canvas-wrap">
-                    <canvas id="canvas1" width="380" height="380" aria-label="Player 1 drawing canvas"></canvas>
-                </div>
-                <div class="canvas-tools">
-                    <button id="clearBtn1" class="btn secondary" aria-label="Clear Player 1 canvas">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
-                        Clear
-                    </button>
-                    <button id="doneBtn1" class="btn primary" aria-label="Player 1 done drawing">✓ Done</button>
-                </div>
-                <!-- Mini result -->
-                <div class="mini-result" id="result1" style="display:none">
-                    <img id="gif1" src="" alt="Player 1 animation" class="mini-gif">
-                    <div class="mini-label">
-                        <span class="badge" id="label1"></span>
-                        <div class="top5-row" id="top5_1"></div>
-                    </div>
-                </div>
-            </div>
+    <!-- Controls bar -->
+    <div class="stage-controls">
+      <button id="replayBtn" class="btn secondary">↺ New Story</button>
+      <button id="resetBtn"  class="btn secondary">✎ Draw Again</button>
+    </div>
+  </section>
 
-            <!-- VS divider -->
-            <div class="vs-divider" aria-hidden="true"><span>VS</span></div>
+</main>
 
-            <!-- Player 2 -->
-            <div class="player-panel" id="panel2">
-                <div class="player-header">
-                    <span class="player-badge p2-badge">Player 2</span>
-                    <span class="done-indicator" id="done2" aria-live="polite"></span>
-                </div>
-                <div class="canvas-wrap">
-                    <canvas id="canvas2" width="380" height="380" aria-label="Player 2 drawing canvas"></canvas>
-                </div>
-                <div class="canvas-tools">
-                    <button id="clearBtn2" class="btn secondary" aria-label="Clear Player 2 canvas">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"></path></svg>
-                        Clear
-                    </button>
-                    <button id="doneBtn2" class="btn primary" aria-label="Player 2 done drawing">✓ Done</button>
-                </div>
-                <!-- Mini result -->
-                <div class="mini-result" id="result2" style="display:none">
-                    <img id="gif2" src="" alt="Player 2 animation" class="mini-gif">
-                    <div class="mini-label">
-                        <span class="badge" id="label2"></span>
-                        <div class="top5-row" id="top5_2"></div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- ── Status + countdown ──────────────────────────────────────── -->
-        <div class="status-bar" id="statusBar" role="status" aria-live="polite">
-            <span id="statusMsg">Both players draw something, then press ✓ Done!</span>
-        </div>
-        <div class="countdown-bar" id="countdownBar" style="display:none">
-            <div class="countdown-fill" id="countdownFill"></div>
-            <span id="countdownLabel">Auto-animating in 10s…</span>
-        </div>
-
-        <!-- ── Interaction stage ───────────────────────────────────────── -->
-        <section class="interaction-stage" id="interactionStage" aria-label="Interaction animation">
-            <div class="stage-empty" id="stageEmpty">
-                <div class="loader" id="stageLoader" style="display:none"></div>
-                <p id="stageMsg">The two sketches will meet here ✨</p>
-            </div>
-            <div class="stage-result" id="stageResult" style="display:none">
-                <img id="interactionGif" src="" alt="Sketch interaction animation" class="interaction-gif">
-                <div class="interaction-label" id="interactionLabel"></div>
-                <button id="replayBtn" class="btn secondary replay-btn">↺ Replay</button>
-            </div>
-        </section>
-    </main>
-
-    <script src="static/app.js"></script>
+<!-- Konva loaded before module script -->
+<script src="https://unpkg.com/konva@9/konva.min.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

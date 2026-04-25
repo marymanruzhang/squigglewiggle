@@ -1,285 +1,489 @@
 /**
- * SquiggleWiggle AI — Multi-user canvas controller
+ * SquiggleWiggle AI — Unified Draw + Story Controller
  *
- * State machine per player:  idle → drawing → done
- * Global trigger: 10 s of inactivity on EITHER canvas (or both Done buttons pressed)
+ * Flow:
+ *   Phase 1 (DRAW):  Each player draws on their canvas and types a label.
+ *                    Both press "✓ Ready!" → Phase 2.
+ *
+ *   Phase 2 (STORY): Both sketches appear on a shared Konva stage,
+ *                    wander around and execute the story interaction layer
+ *                    (storyPlanner → storyRunner → storyBeatAnimations).
+ *
+ * The storyRunner is limited to exactly 2 agents at a time.
+ * "New Story" replays with the same sketches; "Draw Again" resets to Phase 1.
  */
 
-document.addEventListener('DOMContentLoaded', () => {
+import {
+  registerRecognizedSketch,
+  removeSketch,
+  startInteractionEngine,
+  stopInteractionEngine,
+  getRegistry,
+  getEngine,
+  clearAllCooldowns,
+} from '/static/animation/index.js';
 
-  const INACTIVITY_MS = 10_000;
+import { STORY_TEMPLATES } from '/static/animation/storyTemplates.js';
 
-  // ── Canvas contexts ────────────────────────────────────────────────────
-  const canvas1 = document.getElementById('canvas1');
-  const canvas2 = document.getElementById('canvas2');
-  const ctx1    = canvas1.getContext('2d');
-  const ctx2    = canvas2.getContext('2d');
+// ── Known labels (for autocomplete suggestions) ──────────────────────────────
+const KNOWN_LABELS = [
+  'flower','bee','butterfly','bird','cloud','sun','rabbit','carrot','tree',
+  'cat','dog','fish','pond','mushroom','sheep','umbrella','rain','star',
+  'heart','whale','bear','frog','duck','horse','cow','elephant','leaf',
+  'cactus','bush','grass','river','ocean','rock','mountain','mouse',
+  'lion','tiger','shark','jellyfish','octopus','crab','bat','owl',
+  'parrot','dragon','snake','pig','monkey','ant','spider','cake','apple',
+  'banana','strawberry','house','tent','cup','boat','car','airplane','rocket',
+];
 
-  // ── Buttons ────────────────────────────────────────────────────────────
-  const clearBtn1 = document.getElementById('clearBtn1');
-  const clearBtn2 = document.getElementById('clearBtn2');
-  const doneBtn1  = document.getElementById('doneBtn1');
-  const doneBtn2  = document.getElementById('doneBtn2');
+// ── DOM refs ─────────────────────────────────────────────────────────────────
+const drawPhase   = document.getElementById('drawPhase');
+const stagePhase  = document.getElementById('stagePhase');
 
-  // ── Per-player result elements ─────────────────────────────────────────
-  const result1  = document.getElementById('result1');
-  const result2  = document.getElementById('result2');
-  const gif1     = document.getElementById('gif1');
-  const gif2     = document.getElementById('gif2');
-  const label1   = document.getElementById('label1');
-  const label2   = document.getElementById('label2');
-  const top5_1   = document.getElementById('top5_1');
-  const top5_2   = document.getElementById('top5_2');
-  const doneInd1 = document.getElementById('done1');
-  const doneInd2 = document.getElementById('done2');
+const canvas1     = document.getElementById('canvas1');
+const canvas2     = document.getElementById('canvas2');
+const ctx1        = canvas1.getContext('2d');
+const ctx2        = canvas2.getContext('2d');
 
-  // ── Status / countdown ─────────────────────────────────────────────────
-  const statusMsg     = document.getElementById('statusMsg');
-  const countdownBar  = document.getElementById('countdownBar');
-  const countdownFill = document.getElementById('countdownFill');
-  const countdownLbl  = document.getElementById('countdownLabel');
+const clearBtn1   = document.getElementById('clearBtn1');
+const clearBtn2   = document.getElementById('clearBtn2');
+const doneBtn1    = document.getElementById('doneBtn1');
+const doneBtn2    = document.getElementById('doneBtn2');
 
-  // ── Stage ──────────────────────────────────────────────────────────────
-  const stageEmpty       = document.getElementById('stageEmpty');
-  const stageLoader      = document.getElementById('stageLoader');
-  const stageMsg         = document.getElementById('stageMsg');
-  const stageResult      = document.getElementById('stageResult');
-  const interactionGif   = document.getElementById('interactionGif');
-  const interactionLabel = document.getElementById('interactionLabel');
-  const replayBtn        = document.getElementById('replayBtn');
+const labelInput1 = document.getElementById('labelInput1');
+const labelInput2 = document.getElementById('labelInput2');
+const suggestions1 = document.getElementById('suggestions1');
+const suggestions2 = document.getElementById('suggestions2');
 
-  // ── State ──────────────────────────────────────────────────────────────
-  const state = {
-    1: { drawn: false, done: false, strokes: [], curX: [], curY: [], drawing: false },
-    2: { drawn: false, done: false, strokes: [], curX: [], curY: [], drawing: false },
+const done1El     = document.getElementById('done1');
+const done2El     = document.getElementById('done2');
+const statusMsg   = document.getElementById('statusMsg');
+
+const storyHeader      = document.getElementById('storyHeader');
+const storyPairLabel   = document.getElementById('storyPairLabel');
+const p1Name           = document.getElementById('p1Name');
+const p2Name           = document.getElementById('p2Name');
+const beatTimeline     = document.getElementById('beatTimeline');
+const storyStageInner  = document.getElementById('storyStageInner');
+
+const replayBtn   = document.getElementById('replayBtn');
+const resetBtn    = document.getElementById('resetBtn');
+
+// ── Per-player state ──────────────────────────────────────────────────────────
+const players = {
+  1: { drawn: false, done: false, label: '', drawing: false,
+       strokes: [], curX: [], curY: [], imageDataURL: null },
+  2: { drawn: false, done: false, label: '', drawing: false,
+       strokes: [], curX: [], curY: [], imageDataURL: null },
+};
+
+// ── Canvas init ───────────────────────────────────────────────────────────────
+function initCtx(ctx) {
+  ctx.fillStyle   = '#ffffff';
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.lineCap     = 'round';
+  ctx.lineJoin    = 'round';
+  ctx.lineWidth   = 7;
+  ctx.strokeStyle = '#1a1a2e';
+}
+initCtx(ctx1);
+initCtx(ctx2);
+
+// ── Drawing handlers ──────────────────────────────────────────────────────────
+function getXY(e, cvs) {
+  const r  = cvs.getBoundingClientRect();
+  const sx = cvs.width  / r.width;
+  const sy = cvs.height / r.height;
+  const ev = e.touches ? e.touches[0] : e;
+  return { x: (ev.clientX - r.left) * sx, y: (ev.clientY - r.top) * sy };
+}
+
+function makeHandlers(pid, ctx) {
+  const p = players[pid];
+  return {
+    start(e) {
+      e.preventDefault();
+      p.drawing = true;
+      p.drawn   = true;
+      const { x, y } = getXY(e, ctx.canvas);
+      p.curX = [x]; p.curY = [y];
+      ctx.beginPath(); ctx.moveTo(x, y);
+      checkDoneEnabled(pid);
+    },
+    move(e) {
+      if (!p.drawing) return;
+      e.preventDefault();
+      const { x, y } = getXY(e, ctx.canvas);
+      ctx.lineTo(x, y); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y);
+      p.curX.push(x); p.curY.push(y);
+    },
+    end() {
+      if (p.drawing && p.curX.length > 0) {
+        p.strokes.push([p.curX.slice(), p.curY.slice()]);
+        p.curX = []; p.curY = [];
+      }
+      p.drawing = false;
+    },
   };
+}
 
-  let inactivityTimer   = null;
-  let countdownInterval = null;
-  let animating         = false;
+function attach(cvs, h) {
+  cvs.addEventListener('mousedown',  h.start);
+  cvs.addEventListener('mousemove',  h.move);
+  cvs.addEventListener('mouseup',    h.end);
+  cvs.addEventListener('mouseleave', h.end);
+  cvs.addEventListener('touchstart', h.start, { passive: false });
+  cvs.addEventListener('touchmove',  h.move,  { passive: false });
+  cvs.addEventListener('touchend',   h.end);
+}
 
-  // ── Canvas init ────────────────────────────────────────────────────────
-  function initCtx(ctx) {
-    ctx.fillStyle   = '#ffffff';
-    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
-    ctx.lineWidth   = 7;
-    ctx.strokeStyle = '#000000';
-  }
-  initCtx(ctx1);
-  initCtx(ctx2);
+attach(canvas1, makeHandlers(1, ctx1));
+attach(canvas2, makeHandlers(2, ctx2));
 
-  // ── Drawing handlers ───────────────────────────────────────────────────
-  function getXY(e, cvs) {
-    const r  = cvs.getBoundingClientRect();
-    const sx = cvs.width  / r.width;
-    const sy = cvs.height / r.height;
-    const ev = e.touches ? e.touches[0] : e;
-    return { x: (ev.clientX - r.left) * sx, y: (ev.clientY - r.top) * sy };
-  }
-
-  function makeHandlers(pid, ctx) {
-    const s = state[pid];
-    return {
-      start(e) {
-        e.preventDefault();
-        s.drawing = true;
-        s.drawn   = true;
-        const { x, y } = getXY(e, ctx.canvas);
-        s.curX = [x]; s.curY = [y];
-        ctx.beginPath(); ctx.moveTo(x, y);
-        resetInactivity();
-        updateStatus();
-      },
-      move(e) {
-        if (!s.drawing) return;
-        e.preventDefault();
-        const { x, y } = getXY(e, ctx.canvas);
-        ctx.lineTo(x, y); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(x, y);
-        s.curX.push(x); s.curY.push(y);
-        resetInactivity();
-      },
-      end() {
-        if (s.drawing && s.curX.length > 0) {
-          s.strokes.push([s.curX.slice(), s.curY.slice()]);
-          s.curX = []; s.curY = [];
-        }
-        s.drawing = false;
-        resetInactivity();
-      },
-    };
-  }
-
-  function attach(cvs, h) {
-    cvs.addEventListener('mousedown',  h.start);
-    cvs.addEventListener('mousemove',  h.move);
-    cvs.addEventListener('mouseup',    h.end);
-    cvs.addEventListener('mouseleave', h.end);
-    cvs.addEventListener('touchstart', h.start, { passive: false });
-    cvs.addEventListener('touchmove',  h.move,  { passive: false });
-    cvs.addEventListener('touchend',   h.end);
-  }
-
-  attach(canvas1, makeHandlers(1, ctx1));
-  attach(canvas2, makeHandlers(2, ctx2));
-
-  // ── Clear ──────────────────────────────────────────────────────────────
-  function clearPlayer(pid, ctx) {
-    initCtx(ctx);
-    const s = state[pid];
-    Object.assign(s, { drawn: false, done: false, strokes: [], curX: [], curY: [], drawing: false });
-    document.getElementById(`done${pid}`).textContent = '';
-    document.getElementById(`result${pid}`).style.display = 'none';
-    cancelInactivity();
-    updateStatus();
-  }
-
-  clearBtn1.addEventListener('click', () => clearPlayer(1, ctx1));
-  clearBtn2.addEventListener('click', () => clearPlayer(2, ctx2));
-
-  // ── Done buttons ───────────────────────────────────────────────────────
-  function markDone(pid) {
-    if (!state[pid].drawn || animating) return;
-    state[pid].done = true;
-    document.getElementById(`done${pid}`).textContent = '✓ Ready';
-    updateStatus();
-    if (state[1].done && state[2].done) {
-      cancelInactivity();
-      triggerAnimation();
-    }
-  }
-
-  doneBtn1.addEventListener('click', () => markDone(1));
-  doneBtn2.addEventListener('click', () => markDone(2));
-
-  // ── Inactivity countdown ───────────────────────────────────────────────
-  function resetInactivity() {
-    if (animating) return;
-    cancelInactivity();
-    if (!state[1].drawn && !state[2].drawn) return;
-
-    countdownBar.style.display = 'block';
-    countdownFill.style.transition = 'none';
-    countdownFill.style.width = '100%';
-
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      countdownFill.style.transition = `width ${INACTIVITY_MS}ms linear`;
-      countdownFill.style.width = '0%';
-    }));
-
-    let remaining = INACTIVITY_MS;
-    countdownInterval = setInterval(() => {
-      remaining -= 1000;
-      countdownLbl.textContent = `Auto-animating in ${Math.max(0, Math.round(remaining / 1000))}s…`;
-    }, 1000);
-
-    inactivityTimer = setTimeout(() => {
-      cancelInactivity();
-      triggerAnimation();
-    }, INACTIVITY_MS);
-  }
-
-  function cancelInactivity() {
-    clearTimeout(inactivityTimer);
-    clearInterval(countdownInterval);
-    inactivityTimer = countdownInterval = null;
-    countdownBar.style.display = 'none';
-  }
-
-  // ── Status text ────────────────────────────────────────────────────────
-  function updateStatus() {
-    if (animating) { statusMsg.textContent = 'AI is recognising and animating your sketches… ✨'; return; }
-    const { drawn: d1, done: dn1 } = state[1];
-    const { drawn: d2, done: dn2 } = state[2];
-    if (!d1 && !d2)  { statusMsg.textContent = 'Both players draw something, then press ✓ Done!'; return; }
-    if ( d1 && !d2)  { statusMsg.textContent = 'Waiting for Player 2 to draw…'; return; }
-    if (!d1 &&  d2)  { statusMsg.textContent = 'Waiting for Player 1 to draw…'; return; }
-    if (dn1 && dn2)  { statusMsg.textContent = 'Both ready — animating!'; return; }
-    if (dn1 && !dn2) { statusMsg.textContent = 'Player 1 is ready — waiting for Player 2…'; return; }
-    if (!dn1 && dn2) { statusMsg.textContent = 'Player 2 is ready — waiting for Player 1…'; return; }
-    statusMsg.textContent = 'Both drawn — press ✓ Done when ready, or wait 10 s!';
-  }
-
-  // ── Top-5 pills ────────────────────────────────────────────────────────
-  function renderTop5(container, items) {
-    container.innerHTML = '';
-    (items || []).forEach((item, i) => {
-      const p = document.createElement('span');
-      p.className = 'top5-pill' + (i === 0 ? ' best' : '');
-      p.title     = `${item.conf.toFixed(1)}%`;
-      p.textContent = item.label;
-      container.appendChild(p);
-    });
-  }
-
-  // ── Main animation trigger ─────────────────────────────────────────────
-  async function triggerAnimation() {
-    if (animating) return;
-    if (!state[1].drawn && !state[2].drawn) return;
-
-    animating = true;
-    updateStatus();
-
-    stageResult.style.display = 'none';
-    stageEmpty.style.display  = 'block';
-    stageLoader.style.display = 'block';
-    stageMsg.textContent      = 'Recognising and animating…';
-
-    const b64 = cvs => cvs.toDataURL('image/png');
-
-    const body = {
-      image1:   b64(canvas1),
-      strokes1: state[1].strokes,
-      image2:   b64(canvas2),
-      strokes2: state[2].strokes,
-    };
-
-    try {
-      const resp = await fetch('/api/animate-pair', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+// ── Label autocomplete ────────────────────────────────────────────────────────
+function makeSuggestions(input, suggestEl, pid) {
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    suggestEl.innerHTML = '';
+    if (q.length < 1) return;
+    const matches = KNOWN_LABELS.filter(l => l.startsWith(q)).slice(0, 6);
+    matches.forEach(m => {
+      const chip = document.createElement('button');
+      chip.className   = 'suggest-chip';
+      chip.textContent = m;
+      chip.type        = 'button';
+      chip.addEventListener('mousedown', (e) => {
+        e.preventDefault(); // keep focus
+        input.value = m;
+        suggestEl.innerHTML = '';
+        players[pid].label = m;
+        checkDoneEnabled(pid);
       });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || 'Server error');
+      suggestEl.appendChild(chip);
+    });
+    players[pid].label = input.value.trim().toLowerCase();
+    checkDoneEnabled(pid);
+  });
+  input.addEventListener('blur', () => setTimeout(() => suggestEl.innerHTML = '', 200));
+}
 
-      const ts = '?t=' + Date.now();
+makeSuggestions(labelInput1, suggestions1, 1);
+makeSuggestions(labelInput2, suggestions2, 2);
 
-      // Player 1 mini result
-      gif1.src          = data.gif_url1 + ts;
-      label1.textContent = data.category1;
-      renderTop5(top5_1, data.top5_1);
-      result1.style.display = 'flex';
+// ── Done button gating ────────────────────────────────────────────────────────
+function checkDoneEnabled(pid) {
+  const p = players[pid];
+  const input = pid === 1 ? labelInput1 : labelInput2;
+  p.label = input.value.trim().toLowerCase();
+  const enabled = p.drawn && p.label.length >= 1;
+  const btn = pid === 1 ? doneBtn1 : doneBtn2;
+  btn.disabled = !enabled;
+  updateStatus();
+}
 
-      // Player 2 mini result
-      gif2.src          = data.gif_url2 + ts;
-      label2.textContent = data.category2;
-      renderTop5(top5_2, data.top5_2);
-      result2.style.display = 'flex';
+// ── Clear ─────────────────────────────────────────────────────────────────────
+function clearPlayer(pid, ctx) {
+  initCtx(ctx);
+  const p = players[pid];
+  Object.assign(p, { drawn: false, done: false, label: '',
+                     strokes: [], curX: [], curY: [], drawing: false, imageDataURL: null });
+  (pid === 1 ? labelInput1 : labelInput2).value = '';
+  (pid === 1 ? done1El     : done2El    ).textContent = '';
+  (pid === 1 ? doneBtn1    : doneBtn2   ).disabled = true;
+  updateStatus();
+}
 
-      // Interaction stage
-      stageLoader.style.display  = 'none';
-      stageEmpty.style.display   = 'none';
-      interactionGif.src          = data.interaction_gif_url + ts;
-      interactionLabel.textContent = `${data.category1} meets ${data.category2}`;
-      stageResult.style.display   = 'flex';
+clearBtn1.addEventListener('click', () => clearPlayer(1, ctx1));
+clearBtn2.addEventListener('click', () => clearPlayer(2, ctx2));
 
-    } catch (err) {
-      console.error(err);
-      stageLoader.style.display = 'none';
-      stageMsg.textContent      = 'Error: ' + err.message;
-    } finally {
-      animating = false;
-      updateStatus();
-    }
+// ── Done buttons ──────────────────────────────────────────────────────────────
+function markDone(pid, ctx) {
+  const p = players[pid];
+  if (!p.drawn || !p.label) return;
+  p.done = true;
+  p.imageDataURL = ctx.canvas.toDataURL('image/png');
+  (pid === 1 ? done1El : done2El).textContent = `✓ ${p.label}`;
+  updateStatus();
+  if (players[1].done && players[2].done) beginStory();
+}
+
+doneBtn1.addEventListener('click', () => markDone(1, ctx1));
+doneBtn2.addEventListener('click', () => markDone(2, ctx2));
+
+// ── Status text ───────────────────────────────────────────────────────────────
+function updateStatus() {
+  const { drawn: d1, done: dn1, label: l1 } = players[1];
+  const { drawn: d2, done: dn2, label: l2 } = players[2];
+
+  if (dn1 && dn2) { statusMsg.textContent = 'Let the story begin! ✨'; return; }
+
+  const p1ready = d1 && l1;
+  const p2ready = d2 && l2;
+
+  if (!d1 && !d2) { statusMsg.textContent = 'Draw something on each side, then name it!'; return; }
+  if (!p1ready && !p2ready) { statusMsg.textContent = 'Draw + label each sketch, then press ✓ Ready!'; return; }
+  if (p1ready && !dn1 && !p2ready) { statusMsg.textContent = `Player 1 has "${l1}" — waiting for Player 2…`; return; }
+  if (p2ready && !dn2 && !p1ready) { statusMsg.textContent = `Player 2 has "${l2}" — waiting for Player 1…`; return; }
+  if (dn1 && !p2ready) { statusMsg.textContent = `Player 1 is ready with "${l1}" — Player 2, your turn!`; return; }
+  if (dn2 && !p1ready) { statusMsg.textContent = `Player 2 is ready with "${l2}" — Player 1, your turn!`; return; }
+  if (p1ready && !dn1 && dn2) { statusMsg.textContent = `Player 2 (${l2}) is waiting — Player 1, press ✓ Ready!`; return; }
+  if (p2ready && !dn2 && dn1) { statusMsg.textContent = `Player 1 (${l1}) is waiting — Player 2, press ✓ Ready!`; return; }
+  statusMsg.textContent = 'Both ready — press ✓ Ready! to start the story!';
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 2: STORY STAGE
+// ══════════════════════════════════════════════════════════════════════════════
+
+let konvaStage   = null;
+let konvaLayer   = null;
+let agentBadges  = {};
+let agentRefs    = {};   // { 1: SceneAgent, 2: SceneAgent }
+let storyRunning = false;
+
+// ── Show the story stage ──────────────────────────────────────────────────────
+async function beginStory() {
+  // Capture canvases before switching phases
+  players[1].imageDataURL = players[1].imageDataURL || ctx1.canvas.toDataURL('image/png');
+  players[2].imageDataURL = players[2].imageDataURL || ctx2.canvas.toDataURL('image/png');
+
+  // Update name labels
+  p1Name.textContent = players[1].label;
+  p2Name.textContent = players[2].label;
+
+  // Switch to stage phase
+  drawPhase.classList.add('hidden');
+  stagePhase.classList.remove('hidden');
+
+  await setupKonva();
+  await spawnBothSketches();
+  interceptStoryLogs();
+  clearAllCooldowns();
+  startInteractionEngine();
+}
+
+// ── Konva stage setup ─────────────────────────────────────────────────────────
+async function setupKonva() {
+  // Tear down previous instance if any
+  if (konvaStage) {
+    stopInteractionEngine();
+    getRegistry().getAll().forEach(a => removeSketch(a.id));
+    konvaStage.destroy();
+    konvaStage = null;
+    konvaLayer = null;
+    Object.values(agentBadges).forEach(b => b.remove());
+    agentBadges = {};
+    agentRefs   = {};
   }
 
-  // ── Replay ─────────────────────────────────────────────────────────────
-  replayBtn.addEventListener('click', () => {
-    const src = interactionGif.src.split('?')[0];
-    interactionGif.src = src + '?t=' + Date.now();
+  storyStageInner.innerHTML = '';
+
+  const W = storyStageInner.offsetWidth  || 800;
+  const H = storyStageInner.offsetHeight || 400;
+
+  konvaStage = new Konva.Stage({ container: 'storyStageInner', width: W, height: H });
+  konvaLayer = new Konva.Layer();
+  konvaStage.add(konvaLayer);
+
+  getEngine().resize(W, H);
+}
+
+// ── Spawn both players' sketches on the Konva stage ──────────────────────────
+async function spawnBothSketches() {
+  const W = konvaStage.width();
+  const H = konvaStage.height();
+  const SIZE = 140;
+
+  // Player 1: left-centre, Player 2: right-centre
+  const positions = [
+    { x: W * 0.22, y: H * 0.5 },
+    { x: W * 0.78, y: H * 0.5 },
+  ];
+
+  for (let pid = 1; pid <= 2; pid++) {
+    const p   = players[pid];
+    const pos = positions[pid - 1];
+    const id  = `player${pid}`;
+
+    const group = await makeKonvaGroup(p.imageDataURL, pos.x, pos.y, SIZE, id);
+
+    const agent = registerRecognizedSketch({
+      id,
+      label:      p.label,
+      confidence: 1.0,
+      bbox:       { x: pos.x - SIZE/2, y: pos.y - SIZE/2, width: SIZE, height: SIZE },
+      layerRef:   group,
+    });
+
+    agentRefs[pid] = agent;
+
+    // Update origin on drag
+    group.on('dragend', () => {
+      const gx = group.x(), gy = group.y();
+      agent.bbox      = { x: gx - SIZE/2, y: gy - SIZE/2, width: SIZE, height: SIZE };
+      agent.originPos = { x: gx, y: gy };
+      if (agent._wander) agent._wander.nextPickTime = Date.now() + 800;
+    });
+
+    // State badge
+    makeBadge(id, p.label, pid, group);
+  }
+}
+
+// ── Build a Konva group from a canvas data URL ────────────────────────────────
+// Strips the white background so only the drawn lines appear on the stage.
+function makeKonvaGroup(dataURL, cx, cy, size, id) {
+  return new Promise(resolve => {
+    const img = new window.Image();
+    img.onload = () => {
+      // Draw to temp canvas, multiply-blend to make white transparent
+      const tmp   = document.createElement('canvas');
+      tmp.width   = img.width;
+      tmp.height  = img.height;
+      const tctx  = tmp.getContext('2d');
+      tctx.drawImage(img, 0, 0);
+      // Remove white by checking pixel brightness
+      const idata = tctx.getImageData(0, 0, tmp.width, tmp.height);
+      const d     = idata.data;
+      for (let i = 0; i < d.length; i += 4) {
+        const brightness = (d[i] + d[i+1] + d[i+2]) / 3;
+        // Anything close to white → transparent
+        if (brightness > 230) d[i+3] = 0;
+        // Slightly off-white → semi-transparent
+        else if (brightness > 180) d[i+3] = Math.round((255 - brightness) * 4);
+      }
+      tctx.putImageData(idata, 0, 0);
+
+      const kImg = new Konva.Image({
+        image: tmp,
+        x: -size / 2, y: -size / 2,
+        width: size, height: size,
+      });
+      const g = new Konva.Group({ x: cx, y: cy, draggable: true });
+      g.setAttr('agentId', id);
+      g.add(kImg);
+      konvaLayer.add(g);
+      konvaLayer.draw();
+      resolve(g);
+    };
+    img.src = dataURL;
+  });
+}
+
+// ── Floating state badge ──────────────────────────────────────────────────────
+function makeBadge(id, label, pid, group) {
+  const badge = document.createElement('div');
+  badge.className = 'swbadge';
+  badge.innerHTML = `
+    <div class="swbadge-label">${label}</div>
+    <div class="swbadge-state idle" id="bstate_${id}">idle</div>`;
+
+  // Use the storyStageInner as position anchor
+  const wrap = document.getElementById('storyStage');
+  wrap.appendChild(badge);
+  agentBadges[id] = badge;
+
+  const agent = getRegistry().get(id);
+
+  function syncBadge() {
+    if (!agentBadges[id]) return;
+    const pos = group.position();
+    // position badge relative to the storyStage wrapper (which is position:relative)
+    const stageRect = storyStageInner.getBoundingClientRect();
+    const wrapRect  = wrap.getBoundingClientRect();
+    const relX = pos.x + (stageRect.left - wrapRect.left);
+    const relY = pos.y + (stageRect.top  - wrapRect.top);
+    badge.style.left = relX + 'px';
+    badge.style.top  = (relY - 76) + 'px';
+
+    if (agent) {
+      const s = agent.state || 'idle';
+      const el = document.getElementById(`bstate_${id}`);
+      if (el) { el.textContent = s; el.className = `swbadge-state ${s}`; }
+    }
+    requestAnimationFrame(syncBadge);
+  }
+  syncBadge();
+}
+
+// ── Story bar: intercept console.log from storyRunner ────────────────────────
+function interceptStoryLogs() {
+  const orig = console.log.bind(console);
+  console.log = (...a) => {
+    orig(...a);
+    const m = a.join(' ');
+    if (m.includes('[StoryRunner] ▶')) {
+      const match = m.match(/▶ (\S+): "(.+?)" \+ "(.+?)"/);
+      if (match) showBeatTimeline(match[1]);
+    } else if (m.includes('[StoryRunner] ✓')) {
+      // All chips → done after short delay, then clear
+      setTimeout(() => {
+        beatTimeline.querySelectorAll('.beat-chip').forEach(c => c.className = 'beat-chip done');
+        setTimeout(() => { beatTimeline.innerHTML = ''; }, 1200);
+      }, 300);
+    }
+  };
+}
+
+function showBeatTimeline(storyId) {
+  const t = STORY_TEMPLATES.find(t => t.id === storyId);
+  if (!t) return;
+  beatTimeline.innerHTML = '';
+  const chips = [];
+  t.beats.forEach((b, i) => {
+    const chip = document.createElement('span');
+    chip.className   = 'beat-chip';
+    chip.textContent = b.type.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
+    chip.id          = `chip_${i}`;
+    beatTimeline.appendChild(chip);
+    chips.push(chip);
   });
 
+  // Animate chips as time passes (approximate per-beat durations)
+  let elapsed = 0;
+  t.beats.forEach((b, i) => {
+    const beatDuration = (b.params?.duration ?? 800) + (b.parallel ? 0 : 80);
+    setTimeout(() => {
+      chips.forEach((c, ci) => {
+        if (ci < i)  c.className = 'beat-chip done';
+        if (ci === i) c.className = 'beat-chip active';
+      });
+    }, elapsed);
+    if (!b.parallel) elapsed += beatDuration;
+  });
+}
+
+// ── Replay / Draw Again ───────────────────────────────────────────────────────
+replayBtn.addEventListener('click', async () => {
+  stopInteractionEngine();
+  getRegistry().getAll().forEach(a => removeSketch(a.id));
+  Object.values(agentBadges).forEach(b => b.remove());
+  agentBadges = {};
+  agentRefs   = {};
+  beatTimeline.innerHTML = '';
+  clearAllCooldowns();
+
+  // Rebuild on same stage
+  await setupKonva();
+  await spawnBothSketches();
+  startInteractionEngine();
+});
+
+resetBtn.addEventListener('click', () => {
+  stopInteractionEngine();
+  getRegistry().getAll().forEach(a => removeSketch(a.id));
+  if (konvaStage) { konvaStage.destroy(); konvaStage = null; }
+  Object.values(agentBadges).forEach(b => b.remove());
+  agentBadges = {};
+  agentRefs   = {};
+
+  // Reset player states
+  clearPlayer(1, ctx1);
+  clearPlayer(2, ctx2);
+
+  stagePhase.classList.add('hidden');
+  drawPhase.classList.remove('hidden');
+  beatTimeline.innerHTML = '';
+  updateStatus();
 });
