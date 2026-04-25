@@ -279,8 +279,13 @@ async function setupKonva() {
 
   storyStageInner.innerHTML = '';
 
-  const W = storyStageInner.offsetWidth  || 800;
-  const H = storyStageInner.offsetHeight || 400;
+  // Wait one frame so the browser has laid out the newly-visible stagePhase
+  await new Promise(r => requestAnimationFrame(r));
+
+  const W = storyStageInner.clientWidth  || storyStageInner.offsetWidth  || 800;
+  const H = storyStageInner.clientHeight || storyStageInner.offsetHeight || 420;
+
+  console.log(`[SquiggleWiggle] Stage size: ${W}×${H}`);
 
   konvaStage = new Konva.Stage({ container: 'storyStageInner', width: W, height: H });
   konvaLayer = new Konva.Layer();
@@ -288,6 +293,7 @@ async function setupKonva() {
 
   getEngine().resize(W, H);
 }
+
 
 // ── Spawn both players' sketches on the Konva stage ──────────────────────────
 async function spawnBothSketches() {
@@ -414,9 +420,9 @@ function makeKonvaGroup(dataURL, cx, cy, size, id) {
 }
 
 // ── Floating state badge ──────────────────────────────────────────────────────
-// Badges are appended to storyStageInner, which is the EXACT same element
-// that Konva uses as its container. Both share the same top-left origin,
-// so Konva (x, y) == badge CSS (left, top) with no offset calculation.
+// Badges sit inside storyStageInner (position:relative). Konva coordinates are
+// logical pixels set when the stage was created. If CSS scales the container,
+// we must convert Konva → CSS pixels using the ratio of clientWidth/stageWidth.
 function makeBadge(id, label, pid, group) {
   const badge = document.createElement('div');
   badge.className = 'swbadge';
@@ -424,7 +430,6 @@ function makeBadge(id, label, pid, group) {
     <div class="swbadge-label">${label}</div>
     <div class="swbadge-state idle" id="bstate_${id}">idle</div>`;
 
-  // Use storyStageInner — same coordinate space as the Konva canvas
   storyStageInner.appendChild(badge);
   agentBadges[id] = badge;
 
@@ -432,9 +437,14 @@ function makeBadge(id, label, pid, group) {
 
   function syncBadge() {
     if (!agentBadges[id]) return;
-    const pos = group.position();  // Konva x/y is pixels from storyStageInner top-left
-    badge.style.left = pos.x + 'px';
-    badge.style.top  = (pos.y - 82) + 'px';  // float above group center
+    const pos = group.position();
+
+    // Compute scale: CSS display size ÷ Konva logical size
+    const scaleX = storyStageInner.clientWidth  / (konvaStage?.width()  || storyStageInner.clientWidth);
+    const scaleY = storyStageInner.clientHeight / (konvaStage?.height() || storyStageInner.clientHeight);
+
+    badge.style.left = (pos.x * scaleX) + 'px';
+    badge.style.top  = (pos.y * scaleY - 82) + 'px';
 
     if (agent) {
       const s  = agent.state || 'idle';
@@ -448,6 +458,7 @@ function makeBadge(id, label, pid, group) {
   }
   syncBadge();
 }
+
 
 // ── Story bar: intercept console.log from storyRunner ────────────────────────
 function interceptStoryLogs() {
