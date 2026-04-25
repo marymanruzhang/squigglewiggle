@@ -326,38 +326,20 @@ async function spawnBothSketches() {
     { x: CX + SPREAD / 2, y: CY },
   ];
 
-  statusMsg.textContent = 'Animating limbs... 🎨';
-
   for (let pid = 1; pid <= 2; pid++) {
     const p   = players[pid];
     const pos = positions[pid - 1];
     const id  = `player${pid}`;
 
-    // 1. Fetch skeletal frames if the label supports limb-bearing animation
-    let frames = [];
-    try {
-      const resp = await fetch('/api/skeletal-frames', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: p.imageDataURL, category: p.label })
-      });
-      const res = await resp.json();
-      if (res.isSkeletal) frames = res.frames;
-    } catch (e) {
-      console.warn(`[SquiggleWiggle] Skeletal fetch failed for ${p.label}:`, e);
-    }
-
-    // 2. Build Konva group
+    // Build Konva group (transparent sketch with pastel fill, no white background)
     const group = await makeKonvaGroup(p.imageDataURL, p.label, pos.x, pos.y, SIZE, id);
 
-    // 3. Register with registry — pass frames for skeletal_walk
     const agent = registerRecognizedSketch({
       id,
       label:      p.label,
       confidence: 1.0,
       bbox:       { x: pos.x - SIZE/2, y: pos.y - SIZE/2, width: SIZE, height: SIZE },
       layerRef:   group,
-      frames:     frames, // new property supported by SceneAgent
     });
 
     agentRefs[pid] = agent;
@@ -369,7 +351,6 @@ async function spawnBothSketches() {
       if (agent._wander) agent._wander.nextPickTime = Date.now() + 800;
     });
   }
-  statusMsg.textContent = 'Let the story begin! ✨';
 }
 
 // ── Build a Konva group from a canvas data URL ────────────────────────────────
@@ -418,8 +399,9 @@ function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
       const od_d = od.data;
       for (let i = 0; i < od_d.length; i += 4) {
         const br = (od_d[i] + od_d[i+1] + od_d[i+2]) / 3;
-        if (br > 230) od_d[i+3] = 0;
-        else if (br > 180) od_d[i+3] = Math.round((255 - br) * 4);
+        // More aggressive threshold: strip everything brighter than 200
+        if (br > 200) od_d[i+3] = 0;
+        else if (br > 150) od_d[i+3] = Math.round((200 - br) * (255 / 50));
       }
       tctx.putImageData(od, 0, 0);
 
@@ -496,15 +478,21 @@ function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
       }
 
       // Paint enclosed interior pixels with the pastel fill color
-      // Only paint pixels that were originally empty (not ink)
+      // Simultaneously: FULLY erase all exterior (outside) pixels so there is
+      // no residual white haze from antialiasing outside the sketch outline.
       for (let i = 0; i < W2 * H2; i++) {
-        if (!outside[i] && !mask[i]) {
-          const idx = i * 4;
+        const idx = i * 4;
+        if (outside[i] && !mask[i]) {
+          // Exterior non-ink → fully transparent
+          px[idx+3] = 0;
+        } else if (!outside[i] && !mask[i]) {
+          // Enclosed interior → pastel fill
           px[idx]   = fc[0];
           px[idx+1] = fc[1];
           px[idx+2] = fc[2];
           px[idx+3] = fc[3];
         }
+        // Ink pixels (mask[i]===1) → untouched (already made opaque by step 2)
       }
       tctx.putImageData(fresh, 0, 0);
 
