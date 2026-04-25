@@ -292,11 +292,15 @@ async function setupKonva() {
 
   storyStageInner.innerHTML = '';
 
-  // Wait one frame so the browser has laid out the newly-visible stagePhase
-  await new Promise(r => requestAnimationFrame(r));
+  // IMPORTANT: .hidden uses display:none. After removing it, the browser needs
+  // a full layout reflow before getBoundingClientRect() returns correct values.
+  // A single requestAnimationFrame is not enough — use a 100ms pause instead.
+  storyStageInner.offsetHeight; // force reflow
+  await new Promise(r => setTimeout(r, 100));
 
-  const W = storyStageInner.clientWidth  || storyStageInner.offsetWidth  || 800;
-  const H = storyStageInner.clientHeight || storyStageInner.offsetHeight || 420;
+  const rect = storyStageInner.getBoundingClientRect();
+  const W = Math.round(rect.width)  || 800;
+  const H = Math.round(rect.height) || 420;
 
   console.log(`[SquiggleWiggle] Stage size: ${W}×${H}`);
 
@@ -312,7 +316,7 @@ async function setupKonva() {
 async function spawnBothSketches() {
   const W = konvaStage.width();
   const H = konvaStage.height();
-  const SIZE = 160;
+  const SIZE = 200; // px — sketch bounding box (aspect ratio preserved inside)
 
   // ── Spawn at canvas centre with 220px spread — just like demo.html ──────
   //    Agents start close enough that the interaction engine triggers quickly
@@ -506,7 +510,10 @@ function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
 
       g.add(new Konva.Image({
         image: tmp,
-        x: -imgW / 2, y: -imgH / 2,
+        // Position at 0,0 with offset = half-size so the transform origin
+        // (used by scaleX wing-flap) is the visual center of the sketch.
+        x: 0, y: 0,
+        offsetX: imgW / 2, offsetY: imgH / 2,
         width: imgW, height: imgH,
       }));
 
