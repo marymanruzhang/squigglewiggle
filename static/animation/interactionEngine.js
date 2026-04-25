@@ -34,7 +34,7 @@ export class InteractionEngine {
     this.canvasH     = canvasH;
     this._interval   = null;
     this.checkMs     = 350;
-    this.wanderRadius = 380; // px — agents within this range start steering toward each other
+    this.wanderRadius = 500; // px — start nudging toward partner when within this range
 
     // Track whether a story is currently executing (prevents overlapping stories)
     this._storyRunning = false;
@@ -59,19 +59,22 @@ export class InteractionEngine {
     this._tickStory(agents);
   }
 
-  // ── Wander: give mobile objects real destinations ─────────────────────────
+  // ── Wander: give mobile objects new destinations over time ────────────────
   //
-  // Mobile agents that are idle are given random waypoints so they traverse
-  // the canvas. When near a potential story partner, they are nudged toward
-  // that partner so the story trigger feels natural rather than teleported.
+  // Two modes depending on the agent's idle preset:
   //
-  // NOTE: Agents using self-moving idle presets (flutter, fly, swim, hover,
-  // drift) do NOT wander — their idle animation already handles movement.
-  // Giving them wander waypoints would fight with the preset's own RAF loop.
+  //  a) SELF-MOVING agents (flutter/fly/swim/hover/drift/wave):
+  //     Their idle preset already animates position (reads agent.originPos each
+  //     frame). We just update originPos periodically — the preset will smoothly
+  //     follow the new home. No competing RAF.
+  //
+  //  b) GROUND agents (walk_bounce/hop/prowl/etc.):
+  //     Their idle preset is stationary (sways in place). We use _wanderMoveTo
+  //     to physically drive the agent to a new position.
 
-  // Presets that move the agent themselves — skip wander travel for these
   static SELF_MOVING_PRESETS = new Set([
-    'flutter', 'fly', 'swim', 'slow_swim', 'hover', 'drift', 'wave',
+    'flutter', 'fly', 'zigzag_fly', 'swim', 'slow_swim',
+    'hover', 'drift', 'wave', 'orbit',
   ]);
 
   _tickWander(agents) {
@@ -82,40 +85,47 @@ export class InteractionEngine {
       if (!agent.hasTag('mobile')) continue;
       if (agent.state !== 'idle') continue;
 
-      // Don't wander agents whose idle preset is their movement
-      if (InteractionEngine.SELF_MOVING_PRESETS.has(agent.defaultMotion)) continue;
-
-      // First-time init
       if (!agent._wander) {
-        agent._wander = { nextPickTime: now, moving: false };
+        agent._wander = { nextPickTime: now + 200 + Math.random() * 600, tx: agent.originPos.x, ty: agent.originPos.y };
       }
 
       const w = agent._wander;
       if (now < w.nextPickTime) continue;
 
-      // Pick a new random waypoint anywhere on canvas (with margin)
-      const margin = 80;
-      w.tx = margin + Math.random() * (W - margin * 2);
-      w.ty = margin + Math.random() * (H - margin * 2);
-      w.moving = true;
+      const isSelfMoving = InteractionEngine.SELF_MOVING_PRESETS.has(agent.defaultMotion);
+      const margin = 90;
 
-      const pos     = agent.adapter.getPosition();
-      const dist    = Math.hypot(w.tx - pos.x, w.ty - pos.y);
-      const travelMs = (dist / 90) * 1000; // ~90px/s
-      w.nextPickTime = now + travelMs + 500 + Math.random() * 1500;
+      if (isSelfMoving) {
+        // ── Self-moving: just update originPos, preset drifts to it ────────
+        w.tx = margin + Math.random() * (W - margin * 2);
+        w.ty = margin + Math.random() * (H - margin * 2);
+        // Drift slowly — set nextPickTime after a travel period
+        const dist = Math.hypot(w.tx - agent.originPos.x, w.ty - agent.originPos.y);
+        w.nextPickTime = now + Math.max(2000, dist * 15) + Math.random() * 1500;
+        // Update originPos — the idle preset (flutter/fly/swim) will follow
+        agent.originPos = { x: w.tx, y: w.ty };
 
-      // Use 'returning' so story can preempt the wander
-      agent.state = 'returning';
-      this.controller.stop(agent.id);
+      } else {
+        // ── Ground agent: drive via _wanderMoveTo RAF ───────────────────────
+        w.tx = margin + Math.random() * (W - margin * 2);
+        w.ty = margin + Math.random() * (H - margin * 2);
 
-      const speed = agent.hasTag('flying') ? 100 : 70;
-      this._wanderMoveTo(agent, w.tx, w.ty, speed).then(() => {
-        if (agent.state === 'returning') {
-          agent.state = 'idle';
-          agent.originPos = { x: w.tx, y: w.ty };
-          this.controller.startIdle(agent);
-        }
-      });
+        const pos     = agent.adapter.getPosition();
+        const dist    = Math.hypot(w.tx - pos.x, w.ty - pos.y);
+        const travelMs = (dist / 90) * 1000;
+        w.nextPickTime = now + travelMs + 500 + Math.random() * 1500;
+
+        agent.state = 'returning';
+        this.controller.stop(agent.id);
+
+        this._wanderMoveTo(agent, w.tx, w.ty, 70).then(() => {
+          if (agent.state === 'returning') {
+            agent.state = 'idle';
+            agent.originPos = { x: w.tx, y: w.ty };
+            this.controller.startIdle(agent);
+          }
+        });
+      }
     }
   }
 
@@ -197,13 +207,28 @@ export class InteractionEngine {
     if (!src.hasTag('mobile')) return;
     if (src.state !== 'idle' && src.state !== 'returning') return;
     if (tgt.state === 'story_active') return;
-    // Steer wander destination toward target center
-    if (src._wander) {
-      const tc = tgt.getCenter();
-      src._wander.tx = tc.x;
-      src._wander.ty = tc.y;
+
+    const tc = tgt.getCenter();
+    const sc = src.getCenter();
+    const dist = Math.hypot(tc.x - sc.x, tc.y - sc.y);
+
+    if (InteractionEngine.SELF_MOVING_PRESETS.has(src.defaultMotion)) {
+      // Self-moving: steer originPos toward partner so the idle preset drifts them closer
+      // Only nudge a fraction of the remaining distance each tick
+      const nudgeFraction = 0.15;
+      src.originPos = {
+        x: src.originPos.x + (tc.x - src.originPos.x) * nudgeFraction,
+        y: src.originPos.y + (tc.y - src.originPos.y) * nudgeFraction,
+      };
+    } else {
+      // Ground agent: steer wander destination toward partner
+      if (src._wander) {
+        src._wander.tx = tc.x;
+        src._wander.ty = tc.y;
+      }
     }
   }
+
 
   // ── Story selection and dispatch ───────────────────────────────────────────
 

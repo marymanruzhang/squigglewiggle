@@ -300,10 +300,10 @@ async function spawnBothSketches() {
   const H = konvaStage.height();
   const SIZE = 160;
 
-  // Spawn in left-centre and right-centre, with comfortable spacing
+  // Spawn at 35/65% so they're close enough for nudge to pull them into story range
   const positions = [
-    { x: W * 0.30, y: H * 0.50 },
-    { x: W * 0.70, y: H * 0.50 },
+    { x: W * 0.35, y: H * 0.50 },
+    { x: W * 0.65, y: H * 0.50 },
   ];
 
   for (let pid = 1; pid <= 2; pid++) {

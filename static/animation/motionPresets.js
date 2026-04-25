@@ -179,35 +179,31 @@ export function hover(agent, params = {}) {
 }
 
 export function flutter(agent, params = {}) {
-  // Butterfly/moth: figure-8 flight path + rapid body-tilt for wing-beat feel
-  const { xFreq = 0.35, yFreq = 0.6, xAmp = 40, yAmp = 22,
-          wingFreq = 5.0, wingTilt = 18 } = params;
-  const origin = agent.adapter.getPosition();
+  // Butterfly/moth: organic figure-8 flight path (original smooth version)
+  // Reads agent.originPos each frame so wander can drift the home position
+  const { xFreq = 0.35, yFreq = 0.6, xAmp = 35, yAmp = 20 } = params;
   return oneshotOrLoop(agent, params, t => {
-    // Figure-8 flight path
+    const origin = agent.originPos;   // dynamic — wander updates this
     const x = origin.x + xAmp * Math.sin(2 * Math.PI * t * xFreq)
                        + (xAmp * 0.3) * Math.sin(2 * Math.PI * t * xFreq * 2.7);
     const y = origin.y + yAmp * Math.sin(2 * Math.PI * t * yFreq)
                        + (yAmp * 0.4) * Math.sin(2 * Math.PI * t * yFreq * 1.6);
-    // Wing-beat: fast tilt back and forth — visually reads as flapping wings
-    const r = wingTilt * Math.sin(2 * Math.PI * t * wingFreq);
+    const r = 6 * Math.sin(2 * Math.PI * t * yFreq * 2);
     agent.adapter.setPosition(x, y);
     agent.adapter.setRotation(r);
   });
 }
 
 export function fly(agent, params = {}) {
-  // Bird: broad sweeping path + wing-beat tilt (no scale deformation)
-  const { xAmp = 90, yAmp = 22, speed = 0.38,
-          wingFreq = 3.8, wingTilt = 12 } = params;
-  const origin = agent.adapter.getPosition();
+  // Bird: broad sweeping sine-wave path (original smooth version)
+  // Reads agent.originPos each frame so wander can drift the home position
+  const { xAmp = 85, yAmp = 20, speed = 0.4 } = params;
   return oneshotOrLoop(agent, params, t => {
+    const origin = agent.originPos;   // dynamic — wander updates this
     const x = origin.x + xAmp * Math.sin(2 * Math.PI * t * speed);
     const y = origin.y + yAmp * Math.sin(4 * Math.PI * t * speed);
-    // Wing-beat tilt for side-view flapping
-    const r = wingTilt * Math.sin(2 * Math.PI * t * wingFreq);
     agent.adapter.setPosition(x, y);
-    agent.adapter.setRotation(r);
+    agent.adapter.setRotation(4 * Math.cos(2 * Math.PI * t * speed));
   });
 }
 
@@ -237,10 +233,11 @@ export function orbit(agent, params = {}) {
 // ─── Water creature motions ───────────────────────────────────────────────────
 
 export function swim(agent, params = {}) {
-  // Fish/aquatic: side-to-side with lean rotation (no scale deformation)
+  // Fish/aquatic: side-to-side with lean rotation
+  // Reads agent.originPos dynamically so wander can drift the home position
   const { amplitude = 55, speed = 0.4, leanAngle = 10 } = params;
-  const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
+    const origin = agent.originPos;   // dynamic — wander updates this
     const x    = origin.x + amplitude * Math.sin(2 * Math.PI * t * speed);
     const lean = leanAngle * Math.cos(2 * Math.PI * t * speed);
     agent.adapter.setPosition(x, origin.y);

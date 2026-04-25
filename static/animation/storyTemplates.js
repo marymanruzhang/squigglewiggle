@@ -460,12 +460,10 @@ export const STORY_TEMPLATES = [
   },
 
   // ── Any two mobile objects meet ───────────────────────────────────────────
-  // Full narrative: spot each other → approach → mutual surprise → inspect →
-  // both react → one retreats slightly → settle apart
   {
     id: 'two_mobiles_meet',
     priority: 2,
-    radius: 180,
+    radius: 320,
     cooldown: 6000,
     match: (a, b) => a.hasTag?.('mobile') && b.hasTag?.('mobile'),
     beats: [
@@ -484,14 +482,12 @@ export const STORY_TEMPLATES = [
   },
 
   // ── Fallback: any two objects near each other ─────────────────────────────
-  // Even completely unknown pairs get a small story: one notices,
-  // approaches, they react to each other, then settle back home.
   {
     id: 'generic_proximity_react',
     priority: 1,
-    radius: 140,
+    radius: 280,
     cooldown: 6000,
-    match: () => true, // catches everything
+    match: () => true,
     beats: [
       { type: 'noticeTarget',   actor: 'source', params: { duration: 350 } },
       { type: 'approachTarget', actor: 'source', params: { margin: 65, duration: 900 } },
