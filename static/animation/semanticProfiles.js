@@ -71,9 +71,9 @@ export const CATEGORY_DEFAULTS = {
     motionParams: { amplitude: 5, speed: 0.8 },
   },
   human_character: {
-    defaultMotion: 'walk_bounce',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'character'],
-    motionParams: { travelRange: 60, speed: 0.35 },
+    motionParams: { walkSpeed: 60 },
   },
   food_attractor: {
     defaultMotion: 'pulse',
@@ -144,9 +144,9 @@ export const PROFILES = {
 
   sheep: {
     category: 'ground_animal',
-    defaultMotion: 'walk_bounce',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'herbivore', 'curious'],
-    motionParams: { travelRange: 75, speed: 0.35, bounceHeight: 6 },
+    motionParams: { walkSpeed: 60 },
   },
   rabbit: {
     category: 'ground_animal',
@@ -156,27 +156,27 @@ export const PROFILES = {
   },
   dog: {
     category: 'ground_animal',
-    defaultMotion: 'walk_bounce',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'predator', 'pet', 'curious'],
-    motionParams: { travelRange: 90, speed: 0.45, bounceHeight: 8 },
+    motionParams: { walkSpeed: 85 },
   },
   cat: {
     category: 'ground_animal',
-    defaultMotion: 'prowl',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'predator', 'pet', 'curious'],
-    motionParams: { travelRange: 70, speed: 0.3 },
+    motionParams: { walkSpeed: 70 },
   },
   cow: {
     category: 'ground_animal',
-    defaultMotion: 'slow_walk',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'herbivore'],
-    motionParams: { travelRange: 60, speed: 0.22, bounceHeight: 4 },
+    motionParams: { walkSpeed: 45 },
   },
   horse: {
     category: 'ground_animal',
-    defaultMotion: 'walk_bounce',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'herbivore'],
-    motionParams: { travelRange: 100, speed: 0.5, bounceHeight: 10 },
+    motionParams: { walkSpeed: 100 },
   },
   mouse: {
     category: 'ground_animal',
@@ -198,33 +198,57 @@ export const PROFILES = {
   },
   elephant: {
     category: 'ground_animal',
-    defaultMotion: 'slow_walk',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'herbivore', 'obstacle'],
-    motionParams: { travelRange: 50, speed: 0.18, bounceHeight: 5 },
+    motionParams: { walkSpeed: 40 },
   },
   bear: {
     category: 'ground_animal',
-    defaultMotion: 'walk_bounce',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'predator'],
-    motionParams: { travelRange: 70, speed: 0.3, bounceHeight: 7 },
+    motionParams: { walkSpeed: 65 },
   },
   lion: {
     category: 'ground_animal',
-    defaultMotion: 'prowl',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'predator'],
-    motionParams: { travelRange: 90, speed: 0.35 },
+    motionParams: { walkSpeed: 80 },
   },
   tiger: {
     category: 'ground_animal',
-    defaultMotion: 'prowl',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'predator'],
-    motionParams: { travelRange: 90, speed: 0.38 },
+    motionParams: { walkSpeed: 85 },
   },
   giraffe: {
     category: 'ground_animal',
-    defaultMotion: 'slow_walk',
+    defaultMotion: 'skeletal_walk',
     tags: ['animal', 'mobile', 'ground_based', 'herbivore'],
-    motionParams: { travelRange: 60, speed: 0.2, bounceHeight: 3 },
+    motionParams: { walkSpeed: 50 },
+  },
+  man: {
+    category: 'human_character',
+    defaultMotion: 'skeletal_walk',
+    tags: ['character', 'mobile', 'human'],
+    motionParams: { walkSpeed: 60 },
+  },
+  woman: {
+    category: 'human_character',
+    defaultMotion: 'skeletal_walk',
+    tags: ['character', 'mobile', 'human'],
+    motionParams: { walkSpeed: 60 },
+  },
+  person: {
+    category: 'human_character',
+    defaultMotion: 'skeletal_walk',
+    tags: ['character', 'mobile', 'human'],
+    motionParams: { walkSpeed: 60 },
+  },
+  'stick figure': {
+    category: 'human_character',
+    defaultMotion: 'skeletal_walk',
+    tags: ['character', 'mobile', 'human'],
+    motionParams: { walkSpeed: 70 },
   },
 
   // ── Flying animals ─────────────────────────────────────────────────────────

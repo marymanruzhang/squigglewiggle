@@ -78,7 +78,7 @@ export class InteractionEngine {
     // Aquatic — swim toward originPos with body wave
     'swim', 'slow_swim',
     // Ground — walk/hop/prowl toward originPos with limb animation
-    'walk_bounce', 'slow_walk', 'hop', 'scurry', 'prowl',
+    'walk_bounce', 'slow_walk', 'hop', 'scurry', 'prowl', 'skeletal_walk',
   ]);
 
   _tickWander(agents) {

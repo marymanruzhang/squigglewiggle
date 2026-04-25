@@ -51,6 +51,13 @@ LIMB_MESH_CATEGORIES: frozenset[str] = frozenset({
     "teddy-bear",
     "tiger",
     "zebra",
+    "man",
+    "woman",
+    "person",
+    "boy",
+    "girl",
+    "human",
+    "stick figure",
 })
 
 # Explicitly *not* limb mesh: use their category_map motion type instead.

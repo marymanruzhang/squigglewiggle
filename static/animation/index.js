@@ -58,22 +58,23 @@ const engine     = new InteractionEngine(registry, controller, INTERACTION_RULES
  * @returns {SceneAgent}
  */
 export function registerRecognizedSketch(recognitionResult) {
-  const { id, label, category, confidence, bbox, layerRef } = recognitionResult;
-
-  // Resolve semantic profile (handles unknown labels gracefully)
-  const profile = resolveProfile({ label, category, confidence });
-
-  const agent = new SceneAgent({
-    id,
-    label:         label || 'unknown',
-    category:      profile.category,
-    tags:          profile.tags,
-    defaultMotion: profile.defaultMotion,
-    motionParams:  profile.motionParams || {},
-    bbox,
-    layerRef,
-    confidence,
-  });
+  const { id, label, category, confidence, bbox, layerRef, frames } = recognitionResult;
+ 
+   // Resolve semantic profile (handles unknown labels gracefully)
+   const profile = resolveProfile({ label, category, confidence });
+ 
+   const agent = new SceneAgent({
+     id,
+     label:         label || 'unknown',
+     category:      profile.category,
+     tags:          profile.tags,
+     defaultMotion: profile.defaultMotion,
+     motionParams:  profile.motionParams || {},
+     bbox,
+     layerRef,
+     confidence,
+     frames,
+   });
 
   registry.register(agent);
   controller.startIdle(agent);

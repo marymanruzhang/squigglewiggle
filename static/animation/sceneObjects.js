@@ -182,10 +182,11 @@ export class SceneAgent {
    *   motionParams: object,
    *   bbox:         {x,y,width,height},
    *   layerRef:     *,
-   *   confidence:   number
+   *   confidence:   number,
+   *   frames:       string[]
    * }} opts
    */
-  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence }) {
+  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames }) {
     this.id            = id;
     this.label         = label;
     this.category      = category;
@@ -194,6 +195,17 @@ export class SceneAgent {
     this.motionParams  = motionParams  || {};
     this.bbox          = { ...bbox };
     this.confidence    = confidence    || 1.0;
+    this.frames        = frames        || []; // List of frame data URLs (optional)
+
+    // Pre-cache frame images for performance
+    this.frameImages   = [];
+    if (this.frames.length > 0) {
+      this.frames.forEach(f => {
+        const i = new window.Image();
+        i.src = f;
+        this.frameImages.push(i);
+      });
+    }
 
     // Adapter wraps the raw layerRef
     this.adapter = new LayerAdapter(layerRef);

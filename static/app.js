@@ -316,10 +316,8 @@ async function setupKonva() {
 async function spawnBothSketches() {
   const W = konvaStage.width();
   const H = konvaStage.height();
-  const SIZE = 200; // px — sketch bounding box (aspect ratio preserved inside)
+  const SIZE = 200;
 
-  // ── Spawn at canvas centre with 220px spread — just like demo.html ──────
-  //    Agents start close enough that the interaction engine triggers quickly
   const CX = W * 0.5;
   const CY = H * 0.5;
   const SPREAD = 220;
@@ -328,25 +326,42 @@ async function spawnBothSketches() {
     { x: CX + SPREAD / 2, y: CY },
   ];
 
+  statusMsg.textContent = 'Animating limbs... 🎨';
+
   for (let pid = 1; pid <= 2; pid++) {
     const p   = players[pid];
     const pos = positions[pid - 1];
     const id  = `player${pid}`;
 
-    // Label is baked into the Konva group — no separate DOM element needed
+    // 1. Fetch skeletal frames if the label supports limb-bearing animation
+    let frames = [];
+    try {
+      const resp = await fetch('/api/skeletal-frames', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ image: p.imageDataURL, category: p.label })
+      });
+      const res = await resp.json();
+      if (res.isSkeletal) frames = res.frames;
+    } catch (e) {
+      console.warn(`[SquiggleWiggle] Skeletal fetch failed for ${p.label}:`, e);
+    }
+
+    // 2. Build Konva group
     const group = await makeKonvaGroup(p.imageDataURL, p.label, pos.x, pos.y, SIZE, id);
 
+    // 3. Register with registry — pass frames for skeletal_walk
     const agent = registerRecognizedSketch({
       id,
       label:      p.label,
       confidence: 1.0,
       bbox:       { x: pos.x - SIZE/2, y: pos.y - SIZE/2, width: SIZE, height: SIZE },
       layerRef:   group,
+      frames:     frames, // new property supported by SceneAgent
     });
 
     agentRefs[pid] = agent;
 
-    // Update origin on drag
     group.on('dragend', () => {
       const gx = group.x(), gy = group.y();
       agent.bbox      = { x: gx - SIZE/2, y: gy - SIZE/2, width: SIZE, height: SIZE };
@@ -354,6 +369,7 @@ async function spawnBothSketches() {
       if (agent._wander) agent._wander.nextPickTime = Date.now() + 800;
     });
   }
+  statusMsg.textContent = 'Let the story begin! ✨';
 }
 
 // ── Build a Konva group from a canvas data URL ────────────────────────────────

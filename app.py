@@ -383,6 +383,51 @@ def sketch_sample(label):
     return jsonify({"image": f"data:image/png;base64,{b64}", "label": label})
 
 
+# ---------------------------------------------------------------------------
+# /api/skeletal-frames — generate 2D mesh-warped walk frames
+# ---------------------------------------------------------------------------
+
+@app.route("/api/skeletal-frames", methods=["POST"])
+def skeletal_frames():
+    """
+    Takes { image: base64, category: str }
+    Returns { frames: [base64, ...], isSkeletal: bool }
+    """
+    data = request.get_json(silent=True) or {}
+    image_data = data.get("image")
+    category   = data.get("category", "dog")
+
+    from animation_engine.limb_bearing import should_use_limb_mesh
+    if not should_use_limb_mesh(category):
+        return jsonify({"isSkeletal": False, "frames": []})
+
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+
+    if 'base64,' in image_data:
+        image_data = image_data.split('base64,')[1]
+
+    img = Image.open(io.BytesIO(base64.b64decode(image_data))).convert("RGB")
+
+    from animation_engine.skeletal import generate_skeletal_frames
+    try:
+        frames = generate_skeletal_frames(img)
+        # Convert frames to base64
+        b64_frames = []
+        for f in frames:
+            buf = io.BytesIO()
+            f.save(buf, format="PNG")
+            b64_frames.append(f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode()}")
+
+        return jsonify({
+            "isSkeletal": True,
+            "frames": b64_frames
+        })
+    except Exception as e:
+        print(f"Error in skeletal_frames: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     print("\n  SquiggleWiggle — open http://localhost:5001 in your browser\n")
     app.run(host="0.0.0.0", port=5001, debug=True)
