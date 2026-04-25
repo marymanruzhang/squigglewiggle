@@ -121,9 +121,11 @@ export class AnimationController {
     agent.adapter.setRotation(0);
     agent.adapter.setScale(1);
     agent.adapter.setOpacity(1);
-    // Reset any wing-flap scaleX left on the image child
+    // Reset any image-child transforms (wing flap, leg squash, direction flip)
     const img = agent.adapter.ref?.findOne?.('Image');
-    if (img) img.scaleX(1);
+    if (img) { img.scaleX(1); img.scaleY(1); }
+    // Reset originPos to spawnPos so the animal starts next idle from home
+    agent.originPos = { ...home };
   }
 
   isActive(agentId)  { return this._active.has(agentId); }

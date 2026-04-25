@@ -73,8 +73,12 @@ export class InteractionEngine {
   //     to physically drive the agent to a new position.
 
   static SELF_MOVING_PRESETS = new Set([
-    'flutter', 'fly', 'zigzag_fly', 'swim', 'slow_swim',
-    'hover', 'drift', 'wave', 'orbit',
+    // Flying — move via oscillation around originPos
+    'flutter', 'fly', 'zigzag_fly', 'hover', 'drift', 'wave', 'orbit',
+    // Aquatic — swim toward originPos with body wave
+    'swim', 'slow_swim',
+    // Ground — walk/hop/prowl toward originPos with limb animation
+    'walk_bounce', 'slow_walk', 'hop', 'scurry', 'prowl',
   ]);
 
   _tickWander(agents) {
@@ -86,12 +90,12 @@ export class InteractionEngine {
       if (agent.state !== 'idle') continue;
 
       if (!agent._wander) {
-        // Self-moving agents (flutter/fly/swim) settle in place first before drifting
-        // Ground agents start wandering almost immediately
-        const isSM = InteractionEngine.SELF_MOVING_PRESETS.has(agent.defaultMotion);
-        const initDelay = isSM
-          ? 4000 + Math.random() * 2000   // 4–6s: flutter in place first
-          : 200  + Math.random() * 600;   // 0.2–0.8s: ground animals start walking
+        // Flying agents settle in place first so you see the idle animation clearly.
+        // Ground animals start walking almost immediately — it looks more natural.
+        const FLYING = new Set(['flutter','fly','zigzag_fly','hover','orbit']);
+        const initDelay = FLYING.has(agent.defaultMotion)
+          ? 3000 + Math.random() * 2000   // 3–5s: flutter/fly beautifully in place
+          : 500  + Math.random() * 1000;  // 0.5–1.5s: ground animals start walking
         agent._wander = { nextPickTime: now + initDelay, tx: agent.originPos.x, ty: agent.originPos.y };
       }
 
