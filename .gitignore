@@ -15,4 +15,5 @@ quickdraw_data/
 
 # Logs and debug artifacts
 *.log
+*_log.txt
 *.png
