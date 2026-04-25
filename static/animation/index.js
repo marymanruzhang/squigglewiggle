@@ -29,6 +29,11 @@ import { resolveProfile }               from './semanticProfiles.js';
 import { AnimationController }          from './animationController.js';
 import { InteractionEngine }            from './interactionEngine.js';
 import { INTERACTION_RULES }            from './interactionRules.js';
+import { clearAllCooldowns }            from './storyPlanner.js';
+import { interrupt }                    from './storyRunner.js';
+// Note: storyTemplates, storyBeatAnimations are loaded transitively via
+// interactionEngine → storyPlanner → storyTemplates
+//                  → storyRunner   → storyBeatAnimations
 
 // ─── Singletons ───────────────────────────────────────────────────────────────
 
@@ -83,9 +88,11 @@ export function registerRecognizedSketch(recognitionResult) {
 
 /**
  * Remove a sketch from the scene and stop its animations.
+ * If the sketch is currently in a story, that story is interrupted gracefully.
  * @param {string} id
  */
 export function removeSketch(id) {
+  engine.interruptAgent(id);
   controller.stop(id);
   registry.unregister(id);
 }
@@ -113,6 +120,9 @@ export function stopInteractionEngine() { engine.stop(); }
 export function getEngine()     { return engine; }
 export function getRegistry()   { return registry; }
 export function getController() { return controller; }
+
+/** Clear all story cooldowns (useful for resetting the scene). */
+export { clearAllCooldowns };
 
 // ─── Konva.js integration helper ─────────────────────────────────────────────
 

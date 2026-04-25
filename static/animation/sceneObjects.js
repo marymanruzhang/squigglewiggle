@@ -194,9 +194,14 @@ export class SceneAgent {
     this.originPos = { x: pos.x, y: pos.y };
 
     // Runtime state
-    this.state      = 'idle';  // 'idle' | 'interacting' | 'returning' | 'paused'
-    this.cancelIdle = null;    // cancel function for the current idle animation
-    this.cooldowns  = {};      // { pairKey: timestampMs }
+    // States: 'idle' | 'story_active' | 'returning' | 'paused'
+    this.state           = 'idle';
+    this.cancelIdle      = null;    // cancel function for the current idle animation
+    this.cooldowns       = {};      // { pairKey: timestampMs }
+    this.activeStoryId   = null;    // id of the story this agent is currently in
+    this.lastInteractionTime = 0;   // timestamp of last completed story
+    // homePosition is set on first idle arrival; used by stories that move agents far
+    this.homePosition    = null;
   }
 
   /** Center point derived from stored bbox */
@@ -227,6 +232,9 @@ export class SceneAgent {
     }
     // Smooth return — handled by the motionPresets.moveTo utility
   }
+
+  /** True while this agent is actively executing a story beat sequence. */
+  get isInStory() { return this.state === 'story_active'; }
 }
 
 

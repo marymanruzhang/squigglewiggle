@@ -1,26 +1,49 @@
 /**
  * interactionEngine.js
- * - Wander manager: gives mobile agents real waypoints so they traverse the canvas
- * - Interaction checker: fires tag-based rules when objects are within radius
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Wander manager + Story-aware interaction checker.
+ *
+ * Every `checkMs` (≈350ms) this engine:
+ *   1. Gives mobile agents new wander waypoints.
+ *   2. Asks storyPlanner for the best story plan among all agent pairs.
+ *   3. Hands the plan to storyRunner, which executes the full beat sequence.
+ *
+ * Only one story runs at a time (guarded by agent state checks in the planner).
+ * Non-participating agents keep their idle animations running throughout.
+ *
+ * Backward compatibility: the `rules` constructor argument is accepted but
+ * ignored — all interaction logic now flows through storyTemplates.js.
+ * ─────────────────────────────────────────────────────────────────────────────
  */
 
+import { selectBestPlan } from './storyPlanner.js';
+import { runStory, interrupt } from './storyRunner.js';
+
 export class InteractionEngine {
-  constructor(registry, controller, rules, canvasW = 800, canvasH = 600) {
-    this.registry   = registry;
-    this.controller = controller;
-    this.rules      = [...rules].sort((a, b) => b.priority - a.priority);
-    this.canvasW    = canvasW;
-    this.canvasH    = canvasH;
-    this._interval  = null;
-    this.checkMs    = 350;
-    this.defaultRadius = 200;
-    this.wanderRadius  = 380;   // begin drifting toward a target at this range
+  /**
+   * @param {SceneRegistry}       registry
+   * @param {AnimationController} controller
+   * @param {Array}               _rules       — kept for API compatibility; unused
+   * @param {number}              canvasW
+   * @param {number}              canvasH
+   */
+  constructor(registry, controller, _rules = [], canvasW = 800, canvasH = 600) {
+    this.registry    = registry;
+    this.controller  = controller;
+    this.canvasW     = canvasW;
+    this.canvasH     = canvasH;
+    this._interval   = null;
+    this.checkMs     = 350;
+    this.wanderRadius = 380; // px — agents within this range start steering toward each other
+
+    // Track whether a story is currently executing (prevents overlapping stories)
+    this._storyRunning = false;
   }
 
   start() {
     if (this._interval) return;
     this._interval = setInterval(() => this._tick(), this.checkMs);
-    console.log('[InteractionEngine] started');
+    console.log('[InteractionEngine] started (story mode)');
   }
 
   stop() { clearInterval(this._interval); this._interval = null; }
@@ -33,10 +56,14 @@ export class InteractionEngine {
   _tick() {
     const agents = this.registry.getAll();
     this._tickWander(agents);
-    this._tickInteractions(agents);
+    this._tickStory(agents);
   }
 
   // ── Wander: give mobile objects real destinations ─────────────────────────
+  //
+  // Mobile agents that are idle are given random waypoints so they traverse
+  // the canvas. When near a potential story partner, they are nudged toward
+  // that partner so the story trigger feels natural rather than teleported.
 
   _tickWander(agents) {
     const now = Date.now();
@@ -59,14 +86,14 @@ export class InteractionEngine {
       w.tx = margin + Math.random() * (W - margin * 2);
       w.ty = margin + Math.random() * (H - margin * 2);
       w.moving = true;
-      // Next pick: after travel time (distance / speed estimate) + 0.5-2s pause
-      const pos  = agent.adapter.getPosition();
-      const dist = Math.hypot(w.tx - pos.x, w.ty - pos.y);
-      const travelMs = (dist / 90) * 1000;  // ~90px/s travel
+
+      const pos     = agent.adapter.getPosition();
+      const dist    = Math.hypot(w.tx - pos.x, w.ty - pos.y);
+      const travelMs = (dist / 90) * 1000; // ~90px/s
       w.nextPickTime = now + travelMs + 500 + Math.random() * 1500;
 
-      // Move to waypoint — this temporarily replaces idle
-      agent.state = 'returning';  // use returning to allow interaction to preempt
+      // Use 'returning' so story can preempt the wander
+      agent.state = 'returning';
       this.controller.stop(agent.id);
 
       const speed = agent.hasTag('flying') ? 100 : 70;
@@ -80,23 +107,23 @@ export class InteractionEngine {
     }
   }
 
-  /** Custom moveTo using rAF at a constant pixel/sec speed (not fixed duration). */
+  /** rAF-based constant-speed move for wander travel. */
   _wanderMoveTo(agent, tx, ty, pxPerSec) {
     return new Promise(resolve => {
       let lastTs = null;
       let raf;
       const isFlying = agent.hasTag('flying');
-      let phase = 0;  // for bounce
+      let phase = 0;
 
       const tick = ts => {
         if (!lastTs) lastTs = ts;
-        const dt  = Math.min((ts - lastTs) / 1000, 0.05);
+        const dt = Math.min((ts - lastTs) / 1000, 0.05);
         lastTs = ts;
         phase += dt;
 
-        const pos = agent.adapter.getPosition();
-        const dx  = tx - pos.x;
-        const dy  = ty - pos.y;
+        const pos  = agent.adapter.getPosition();
+        const dx   = tx - pos.x;
+        const dy   = ty - pos.y;
         const dist = Math.hypot(dx, dy);
 
         if (dist < 4) {
@@ -107,15 +134,13 @@ export class InteractionEngine {
         }
 
         const step = Math.min(pxPerSec * dt, dist);
-        const nx = pos.x + (dx / dist) * step;
+        const nx   = pos.x + (dx / dist) * step;
 
         if (isFlying) {
-          // Sinusoidal y-drift for flying feel
           const ny = pos.y + (dy / dist) * step + Math.sin(phase * 3) * 1.5;
           agent.adapter.setPosition(nx, ny);
           agent.adapter.setRotation(dx > 0 ? 5 : -5);
         } else {
-          // Bounce for ground animals
           const bounce = 7 * Math.abs(Math.sin(phase * Math.PI * 2.5));
           agent.adapter.setPosition(nx, ty - bounce);
           agent.adapter.setRotation(dx > 0 ? 4 : -4);
@@ -126,7 +151,7 @@ export class InteractionEngine {
 
       raf = requestAnimationFrame(tick);
 
-      // Store cancel so interactions can preempt the wander
+      // Store cancel so a story can preempt the wander mid-travel
       const prev = agent.cancelIdle;
       agent.cancelIdle = () => {
         cancelAnimationFrame(raf);
@@ -136,90 +161,74 @@ export class InteractionEngine {
     });
   }
 
-  // ── Interaction checker ───────────────────────────────────────────────────
+  // ── Nudge wandering agents toward potential story partners ─────────────────
+  //
+  // When a mobile agent is wandering and a story-capable partner is within
+  // wanderRadius, gently steer the wander destination toward that partner.
+  // This makes encounters feel intentional rather than random.
 
-  _tickInteractions(agents) {
+  _nudgeTowardPartners(agents) {
     for (let i = 0; i < agents.length; i++) {
       for (let j = i + 1; j < agents.length; j++) {
-        const a = agents[i], b = agents[j];
-        if (this.registry.hasPairCooldown(a.id, b.id)) continue;
-
+        const a = agents[i];
+        const b = agents[j];
         const dist = this._dist(a.getCenter(), b.getCenter());
-
-        // Full interaction: both idle, within radius
-        if (a.state === 'idle' && b.state === 'idle') {
-          const match = this._findRule(a, b, dist);
-          if (match) { this._dispatch(match); continue; }
-        }
-
-        // Approach: one is wandering (returning), other is idle — nudge source toward target
-        if (dist < this.wanderRadius && dist > this.defaultRadius) {
-          this._nudgeToward(a, b);
-        }
+        if (dist > this.wanderRadius || dist < 50) continue;
+        this._tryNudge(a, b);
+        this._tryNudge(b, a);
       }
     }
   }
 
-  /** Gently steer a mobile agent toward a potential interaction partner. */
-  _nudgeToward(a, b) {
-    // Find which one is the potential "source" (has mobile tag, currently wandering)
-    const tryNudge = (src, tgt) => {
-      if (!src.hasTag('mobile')) return false;
-      if (src.state !== 'idle' && src.state !== 'returning') return false;
-      if (this.registry.hasPairCooldown(src.id, tgt.id)) return false;
-
-      // Check if there's a matching rule for this pair
-      const hasRule = this.rules.some(r =>
-        (r.radius ?? this.defaultRadius) >= this._dist(src.getCenter(), tgt.getCenter()) * 0.7 &&
-        (r.match(src, tgt) || (r.bidirectional !== false && r.match(tgt, src)))
-      );
-      if (!hasRule) return false;
-
-      // Steer wander destination toward target
-      if (src._wander) {
-        const tc = tgt.getCenter();
-        src._wander.tx = tc.x;
-        src._wander.ty = tc.y;
-      }
-      return true;
-    };
-
-    tryNudge(a, b) || tryNudge(b, a);
+  _tryNudge(src, tgt) {
+    if (!src.hasTag('mobile')) return;
+    if (src.state !== 'idle' && src.state !== 'returning') return;
+    if (tgt.state === 'story_active') return;
+    // Steer wander destination toward target center
+    if (src._wander) {
+      const tc = tgt.getCenter();
+      src._wander.tx = tc.x;
+      src._wander.ty = tc.y;
+    }
   }
+
+  // ── Story selection and dispatch ───────────────────────────────────────────
+
+  _tickStory(agents) {
+    // Don't stack stories — wait for the current one to finish
+    if (this._storyRunning) return;
+
+    // Let wandering agents drift toward possible partners first
+    this._nudgeTowardPartners(agents);
+
+    // Ask the planner for the best possible story right now
+    const plan = selectBestPlan(agents);
+    if (!plan) return;
+
+    // Guard: re-check agent states (planner checks were from a snapshot)
+    if (plan.source.state !== 'idle' || plan.target.state !== 'idle') return;
+
+    this._storyRunning = true;
+
+    console.log(
+      `[InteractionEngine] Dispatching story "${plan.id}":` +
+      ` ${plan.source.label} ↔ ${plan.target.label}`
+    );
+
+    runStory(plan, this.controller)
+      .catch(err => console.warn('[InteractionEngine] story error:', err))
+      .finally(() => { this._storyRunning = false; });
+  }
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
 
   _dist(p, q) { return Math.hypot(q.x - p.x, q.y - p.y); }
 
-  _findRule(a, b, dist) {
-    for (const rule of this.rules) {
-      const radius = rule.radius ?? this.defaultRadius;
-      if (dist > radius) continue;
-      if (rule.match(a, b)) return { rule, source: a, target: b };
-      if (rule.bidirectional !== false && rule.match(b, a)) return { rule, source: b, target: a };
-    }
-    return null;
-  }
-
-  _dispatch({ rule, source, target }) {
-    source.state = 'interacting';
-    target.state = 'interacting';
-    source.cancelIdle?.();
-    target.cancelIdle?.();
-    this.controller.stop(source.id);
-    this.controller.stop(target.id);
-    this.registry.setPairCooldown(source.id, target.id, rule.cooldown ?? 5000);
-
-    console.log(`[InteractionEngine] ${rule.id}: ${source.label} → ${target.label}`);
-
-    Promise.resolve(rule.action(source, target, this.controller))
-      .catch(err => console.warn('[InteractionEngine] action error:', err))
-      .finally(() => {
-        source.state = 'idle';
-        target.state = 'idle';
-        // Reset wander timers so they pick new destinations
-        if (source._wander) source._wander.nextPickTime = Date.now() + 500;
-        if (target._wander) target._wander.nextPickTime = Date.now() + 500;
-        this.controller.startIdle(source);
-        this.controller.startIdle(target);
-      });
+  /**
+   * Interrupt any active story for the given agent.
+   * Call this before removing an agent from the scene.
+   */
+  interruptAgent(agentId) {
+    interrupt(agentId);
   }
 }
