@@ -293,12 +293,12 @@ async function setupKonva() {
 async function spawnBothSketches() {
   const W = konvaStage.width();
   const H = konvaStage.height();
-  const SIZE = 140;
+  const SIZE = 160;  // display size for the sprite on stage
 
-  // Player 1: left-centre, Player 2: right-centre
+  // Player 1: left-centre, Player 2: right-centre (well separated)
   const positions = [
-    { x: W * 0.22, y: H * 0.5 },
-    { x: W * 0.78, y: H * 0.5 },
+    { x: W * 0.25, y: H * 0.5 },
+    { x: W * 0.75, y: H * 0.5 },
   ];
 
   for (let pid = 1; pid <= 2; pid++) {
@@ -312,6 +312,7 @@ async function spawnBothSketches() {
       id,
       label:      p.label,
       confidence: 1.0,
+      // bbox is centered on pos (the group's x,y IS the center)
       bbox:       { x: pos.x - SIZE/2, y: pos.y - SIZE/2, width: SIZE, height: SIZE },
       layerRef:   group,
     });
@@ -332,33 +333,74 @@ async function spawnBothSketches() {
 }
 
 // ── Build a Konva group from a canvas data URL ────────────────────────────────
-// Strips the white background so only the drawn lines appear on the stage.
+// Auto-crops the drawn content, strips white background, then renders it
+// centered on (cx, cy) at the requested display size.
 function makeKonvaGroup(dataURL, cx, cy, size, id) {
   return new Promise(resolve => {
     const img = new window.Image();
     img.onload = () => {
-      // Draw to temp canvas, multiply-blend to make white transparent
-      const tmp   = document.createElement('canvas');
-      tmp.width   = img.width;
-      tmp.height  = img.height;
-      const tctx  = tmp.getContext('2d');
-      tctx.drawImage(img, 0, 0);
-      // Remove white by checking pixel brightness
-      const idata = tctx.getImageData(0, 0, tmp.width, tmp.height);
-      const d     = idata.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const brightness = (d[i] + d[i+1] + d[i+2]) / 3;
-        // Anything close to white → transparent
-        if (brightness > 230) d[i+3] = 0;
-        // Slightly off-white → semi-transparent
-        else if (brightness > 180) d[i+3] = Math.round((255 - brightness) * 4);
-      }
-      tctx.putImageData(idata, 0, 0);
+      // ── Step 1: read pixels and auto-crop to drawn content ──────────────
+      const src    = document.createElement('canvas');
+      src.width    = img.width;
+      src.height   = img.height;
+      const sctx   = src.getContext('2d');
+      sctx.drawImage(img, 0, 0);
 
+      const idata  = sctx.getImageData(0, 0, src.width, src.height);
+      const d      = idata.data;
+      let minX = src.width, minY = src.height, maxX = 0, maxY = 0;
+
+      for (let y = 0; y < src.height; y++) {
+        for (let x = 0; x < src.width; x++) {
+          const i = (y * src.width + x) * 4;
+          const brightness = (d[i] + d[i+1] + d[i+2]) / 3;
+          if (brightness < 220) {   // non-white pixel = ink
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+            if (y < minY) minY = y;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+
+      // Fallback if canvas is blank
+      if (minX > maxX || minY > maxY) {
+        minX = 0; minY = 0; maxX = src.width - 1; maxY = src.height - 1;
+      }
+
+      // Add a small padding around the crop
+      const pad  = 8;
+      minX = Math.max(0, minX - pad);
+      minY = Math.max(0, minY - pad);
+      maxX = Math.min(src.width  - 1, maxX + pad);
+      maxY = Math.min(src.height - 1, maxY + pad);
+
+      const cw = maxX - minX + 1;
+      const ch = maxY - minY + 1;
+
+      // ── Step 2: copy cropped region to output canvas, strip white ───────
+      const tmp   = document.createElement('canvas');
+      tmp.width   = cw;
+      tmp.height  = ch;
+      const tctx  = tmp.getContext('2d');
+      tctx.drawImage(src, minX, minY, cw, ch, 0, 0, cw, ch);
+
+      const odata = tctx.getImageData(0, 0, cw, ch);
+      const od    = odata.data;
+      for (let i = 0; i < od.length; i += 4) {
+        const brightness = (od[i] + od[i+1] + od[i+2]) / 3;
+        if (brightness > 230) od[i+3] = 0;
+        else if (brightness > 180) od[i+3] = Math.round((255 - brightness) * 4);
+      }
+      tctx.putImageData(odata, 0, 0);
+
+      // ── Step 3: place centered on group origin ───────────────────────────
       const kImg = new Konva.Image({
         image: tmp,
-        x: -size / 2, y: -size / 2,
-        width: size, height: size,
+        x: -size / 2,
+        y: -size / 2,
+        width:  size,
+        height: size,
       });
       const g = new Konva.Group({ x: cx, y: cy, draggable: true });
       g.setAttr('agentId', id);
@@ -372,6 +414,9 @@ function makeKonvaGroup(dataURL, cx, cy, size, id) {
 }
 
 // ── Floating state badge ──────────────────────────────────────────────────────
+// Badges are appended to storyStageInner, which is the EXACT same element
+// that Konva uses as its container. Both share the same top-left origin,
+// so Konva (x, y) == badge CSS (left, top) with no offset calculation.
 function makeBadge(id, label, pid, group) {
   const badge = document.createElement('div');
   badge.className = 'swbadge';
@@ -379,28 +424,25 @@ function makeBadge(id, label, pid, group) {
     <div class="swbadge-label">${label}</div>
     <div class="swbadge-state idle" id="bstate_${id}">idle</div>`;
 
-  // Use the storyStageInner as position anchor
-  const wrap = document.getElementById('storyStage');
-  wrap.appendChild(badge);
+  // Use storyStageInner — same coordinate space as the Konva canvas
+  storyStageInner.appendChild(badge);
   agentBadges[id] = badge;
 
   const agent = getRegistry().get(id);
 
   function syncBadge() {
     if (!agentBadges[id]) return;
-    const pos = group.position();
-    // position badge relative to the storyStage wrapper (which is position:relative)
-    const stageRect = storyStageInner.getBoundingClientRect();
-    const wrapRect  = wrap.getBoundingClientRect();
-    const relX = pos.x + (stageRect.left - wrapRect.left);
-    const relY = pos.y + (stageRect.top  - wrapRect.top);
-    badge.style.left = relX + 'px';
-    badge.style.top  = (relY - 76) + 'px';
+    const pos = group.position();  // Konva x/y is pixels from storyStageInner top-left
+    badge.style.left = pos.x + 'px';
+    badge.style.top  = (pos.y - 82) + 'px';  // float above group center
 
     if (agent) {
-      const s = agent.state || 'idle';
+      const s  = agent.state || 'idle';
       const el = document.getElementById(`bstate_${id}`);
-      if (el) { el.textContent = s; el.className = `swbadge-state ${s}`; }
+      if (el && el.textContent !== s) {
+        el.textContent = s;
+        el.className   = `swbadge-state ${s}`;
+      }
     }
     requestAnimationFrame(syncBadge);
   }

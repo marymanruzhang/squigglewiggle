@@ -204,14 +204,14 @@ export class SceneAgent {
     this.homePosition    = null;
   }
 
-  /** Center point derived from stored bbox */
+  /**
+   * Center point of the agent.
+   * In this system, the Konva group's (x, y) IS the center of the sprite
+   * (the image is placed at -size/2, -size/2 within the group), so we
+   * return the adapter position directly.
+   */
   getCenter() {
-    // Use adapter live position + stored bbox dimensions
-    const pos = this.adapter.getPosition();
-    return {
-      x: pos.x + this.bbox.width  / 2,
-      y: pos.y + this.bbox.height / 2,
-    };
+    return this.adapter.getPosition();
   }
 
   hasTag(tag) { return this.tags.includes(tag); }

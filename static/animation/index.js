@@ -106,7 +106,8 @@ export function updateBBox(id, bbox) {
   const agent = registry.get(id);
   if (agent) {
     agent.bbox = { ...bbox };
-    agent.originPos = { x: bbox.x, y: bbox.y };
+    // originPos is the center of the bbox (group x,y = center in our system)
+    agent.originPos = { x: bbox.x + bbox.width / 2, y: bbox.y + bbox.height / 2 };
   }
 }
 
