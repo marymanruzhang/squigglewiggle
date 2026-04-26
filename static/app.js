@@ -702,42 +702,47 @@ async function transitionToAnimationStage() {
     }).then(r => r.json()).catch(() => null),
   ]);
 
-  // Derive per-sketch scale overrides from GPT-4o comparison.
-  // We use a gamma-compressed relative multiplier on top of getSemanticScale:
-  //   multiplier = (aiScale / maxAiScale) ^ GAMMA
-  // GAMMA=0.45 softens extremes so nothing becomes invisible:
-  //   aiScale=1.0  → multiplier=1.0  (larger item keeps its semantic scale)
-  //   aiScale=0.15 → multiplier=0.42 (smaller item is ~42% of the larger)
-  // This prevents the mountain from being microscopically tiny.
-  const GAMMA = 0.45;
-  let leftOverride, rightOverride;
+  // ── Size override: absolute target-height sizing ──────────────────────────────
+  // The LARGER real-world item (aiScale=1.0) is displayed at MAX_H_FRAC of screen.
+  // The SMALLER item is displayed at MAX_H_FRAC * its aiScale fraction.
+  // This guarantees large items always LOOK large on screen.
+  const MAX_H_FRAC = 0.62;  // larger item fills 62% of screen height
+  const MIN_H_PX   = H * 0.12; // nothing smaller than 12% of screen height
+  let leftTargetH, rightTargetH;
+
   if (sizeComp && !sizeComp.error && sizeComp.left_scale !== undefined) {
+    const maxAi = Math.max(sizeComp.left_scale, sizeComp.right_scale);
     console.log(`[compare-sizes] "${lR.label}"=${sizeComp.left_scale.toFixed(2)} ` +
                 `vs "${rR.label}"=${sizeComp.right_scale.toFixed(2)} — ${sizeComp.reasoning}`);
-    const maxAi = Math.max(sizeComp.left_scale, sizeComp.right_scale);
-    const lMul  = Math.pow(sizeComp.left_scale  / maxAi, GAMMA);
-    const rMul  = Math.pow(sizeComp.right_scale / maxAi, GAMMA);
-    // Pass the final absolute scale (semantic baseline * relative multiplier)
-    leftOverride  = getSemanticScale(lR.label) * lMul;
-    rightOverride = getSemanticScale(rR.label) * rMul;
-    console.log(`[compare-sizes] scales: "${lR.label}"=${leftOverride.toFixed(3)} "${rR.label}"=${rightOverride.toFixed(3)}`);
+    leftTargetH  = Math.max(MIN_H_PX, H * MAX_H_FRAC * (sizeComp.left_scale  / maxAi));
+    rightTargetH = Math.max(MIN_H_PX, H * MAX_H_FRAC * (sizeComp.right_scale / maxAi));
+    console.log(`[compare-sizes] targets: "${lR.label}"=${leftTargetH.toFixed(0)}px "${rR.label}"=${rightTargetH.toFixed(0)}px`);
   }
 
   // ── Step 4b: Build Konva groups ───────────────────────────────────────────────
-  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, overrideScale) {
-    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label,
-                                        overrideScale);
+  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, targetH) {
+    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label);
     if (!result) {
       console.warn(`[partAnimator] buildPartGroup failed for "${label}", falling back`);
       return makeGroup(snap.toDataURL('image/png'), cx, cy, agentId);
+    }
+    // Apply absolute target height — ensures large objects look large.
+    if (targetH && result.naturalH) {
+      const s = targetH / result.naturalH;
+      result.group.scaleX(s);
+      result.group.scaleY(s);
+      result.w = result.naturalW * s;
+      result.h = result.naturalH * s;
+      console.log(`[compare-sizes] "${label}" s=${s.toFixed(3)} → ${result.h.toFixed(0)}px tall`);
     }
     return result;
   }
 
   const [lg, rg] = await Promise.all([
-    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W*0.25, H*0.5, 'agent_left',  leftOverride),
-    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W*0.75, H*0.5, 'agent_right', rightOverride),
+    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W*0.25, H*0.5, 'agent_left',  leftTargetH),
+    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W*0.75, H*0.5, 'agent_right', rightTargetH),
   ]);
+
 
   if (!lg || !rg) {
     console.error('[SquiggleWiggle] Failed to build Konva groups — aborting animation');
