@@ -8,6 +8,9 @@
  *    a deformed triangle, barycentric-interpolate back to source coords
  *    and sample the source image there.
  * Zero gaps because we iterate over OUTPUT pixels, not source pixels.
+ *
+ * If GPT-4o joint detection fails, DEFAULT_JOINTS provides anatomically
+ * reasonable positions so LBS always runs for limbed creatures.
  */
 
 const MESH_STEP = 4;   // mesh vertex spacing (px) — smaller = more detail
@@ -82,6 +85,46 @@ function getRotations(type, phase) {
     };
     default: return {};
   }
+}
+
+// ─── Default joint positions (normalized 0-1) when GPT-4o fails ──────────────
+// Anatomically reasonable for typical side-view sketches.
+const DEFAULT_JOINTS = {
+  quadruped: {
+    root:[0.50,0.64], spine:[0.50,0.36], neck:[0.72,0.40], head:[0.86,0.28],
+    hip_L:[0.30,0.64], knee_L:[0.26,0.82], ankle_L:[0.23,0.95],
+    hip_R:[0.72,0.64], knee_R:[0.76,0.82], ankle_R:[0.79,0.95],
+  },
+  biped: {
+    root:[0.50,0.58], spine:[0.50,0.34], neck:[0.50,0.18], head:[0.50,0.07],
+    shoulder_L:[0.30,0.28], elbow_L:[0.22,0.44],
+    shoulder_R:[0.70,0.28], elbow_R:[0.78,0.44],
+    hip_L:[0.40,0.58], knee_L:[0.38,0.76],
+    hip_R:[0.60,0.58], knee_R:[0.62,0.76],
+  },
+  bird: {
+    root:[0.50,0.55], spine:[0.50,0.35], neck:[0.65,0.24], head:[0.76,0.14],
+    shoulder_L:[0.34,0.35], elbow_L:[0.14,0.46],
+    shoulder_R:[0.66,0.35], elbow_R:[0.86,0.46],
+    hip_L:[0.42,0.60], hip_R:[0.58,0.60],
+  },
+  fish: {
+    root:[0.65,0.50], spine:[0.38,0.50], tail_base:[0.20,0.50], tail_tip:[0.05,0.50],
+  },
+};
+
+// ─── Determine skeleton type from label/category ──────────────────────────────
+function determineType(lbl, cat) {
+  const l = (lbl||'').toLowerCase(), c = (cat||'').toLowerCase();
+  if (['butterfly','bee','moth','dragonfly','bat'].some(x=>l.includes(x))) return null; // wings handled separately
+  if (['fish','shark','whale','dolphin'].some(x=>l.includes(x))) return 'fish';
+  if (['bird','parrot','owl','penguin','duck','chicken','crow','eagle'].some(x=>l.includes(x))) return 'bird';
+  if (['human','person','girl','boy','man','woman'].some(x=>l.includes(x))) return 'biped';
+  if (c==='ground_animal'||['dog','cat','horse','cow','sheep','rabbit','fox',
+      'deer','bear','lion','tiger','wolf','pig','turtle','tortoise','frog',
+      'lizard','elephant','rhino','hippo','giraffe','zebra'].some(x=>l.includes(x)))
+    return 'quadruped';
+  return null;
 }
 
 // ─── Fetch joints from backend ────────────────────────────────────────────────
@@ -176,8 +219,19 @@ function rasterizeTri(out, src, OW, OH, SW, SH,
 export async function buildSkeletalRig(croppedCanvas, label, category, cx, cy, agentId, konvaLayer) {
   const SW=croppedCanvas.width, SH=croppedCanvas.height;
 
-  const jointData = await fetchJoints(croppedCanvas, label, category);
-  if (!jointData?.joints) return null;
+  // 1. Try GPT-4o joint detection
+  let jointData = await fetchJoints(croppedCanvas, label, category);
+
+  // 2. Fall back to anatomical defaults so LBS always runs
+  if (!jointData?.joints) {
+    const skType = determineType(label, category);
+    if (!skType || !DEFAULT_JOINTS[skType]) {
+      console.warn(`[skeletonRig] No joints and no default for "${label}" — skipping LBS`);
+      return null;
+    }
+    console.log(`[skeletonRig] Using default joints for "${label}" (${skType})`);
+    jointData = { type: skType, joints: DEFAULT_JOINTS[skType] };
+  }
 
   const type  = jointData.type;
   const bones = BONE_SETS[type];
