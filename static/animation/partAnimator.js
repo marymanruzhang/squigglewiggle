@@ -1,6 +1,8 @@
 /**
  * partAnimator.js — Semantic sizing + per-limb animation
+ * Tries GPT-4o + LBS skeletal rig first; falls back to geometric split.
  */
+import { buildSkeletalRig } from './skeletonRig.js';
 
 // ─── Semantic scale table (relative to a "baseline dog" = 1.0) ────────────────
 const SEMANTIC_SCALE = {
@@ -56,21 +58,43 @@ export async function detectParts(imageDataURL, label) {
 
 // ─── Main builder ─────────────────────────────────────────────────────────────
 export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer, category, label) {
-  return new Promise(resolve => {
+  return new Promise(async resolve => {
     const filled = applyFillAndStrip(sourceCanvas, label);
     if (!filled) { resolve(null); return; }
     const { canvas: src, cropW: W, cropH: H } = filled;
 
-    const group = new Konva.Group({ x: cx, y: cy, id: agentId });
-    const rafIds = [];
     const cat = (category || '').toLowerCase();
     const lbl = (label    || '').toLowerCase();
 
     const isFlying  = cat === 'flying_animal'  || ['butterfly','bird','bee','moth','bat','dragonfly'].includes(lbl);
-    const isGround  = cat === 'ground_animal'  || ['dog','cat','rabbit','sheep','horse','cow','turtle','tortoise','fox','deer','frog','lizard','pig','wolf','bear','lion','tiger'].includes(lbl);
+    const isGround  = cat === 'ground_animal'  || ['dog','cat','rabbit','sheep','horse','cow','turtle','tortoise','fox','deer','frog','lizard','pig','wolf','bear','lion','tiger','elephant'].includes(lbl);
     const isHuman   = cat === 'human_character'|| ['human','person','girl','boy'].includes(lbl);
     const isPlant   = cat === 'plant'          || ['flower','tree','grass','bush','cactus','sunflower','rose'].includes(lbl);
     const isSwim    = cat === 'water_creature' || ['fish','whale','shark','octopus','jellyfish','crab'].includes(lbl);
+    const hasLimbs  = isGround || isHuman || (isFlying && !['butterfly','bee','moth'].includes(lbl));
+
+    // ── Try Plan A: GPT-4o joints + LBS skeleton (limbed creatures only) ──────
+    if (hasLimbs) {
+      try {
+        const rigResult = await buildSkeletalRig(src, lbl, cat, cx, cy, agentId, konvaLayer);
+        if (rigResult) {
+          // Apply semantic scale to the group
+          const scale = getSemanticScale(lbl);
+          rigResult.group.scaleX(scale);
+          rigResult.group.scaleY(scale);
+          rigResult.group._stopPartAnimations = rigResult.stop;
+          konvaLayer.draw();
+          resolve({ group: rigResult.group, w: W * scale, h: H * scale, stop: rigResult.stop });
+          return;
+        }
+      } catch (e) {
+        console.warn('[partAnimator] Skeletal rig failed, falling back to geometric:', e.message);
+      }
+    }
+
+    // ── Fallback: geometric canvas split ──────────────────────────────────────
+    const group  = new Konva.Group({ x: cx, y: cy, id: agentId });
+    const rafIds = [];
 
     if (isFlying) {
       buildWings(src, W, H, group, konvaLayer, rafIds, lbl);
@@ -88,11 +112,9 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
 
     if (group.children.length === 0) { resolve(null); return; }
 
-    // Center the crop on (cx,cy)
     group.offsetX(W / 2);
     group.offsetY(H / 2);
 
-    // Apply semantic scale
     const scale = getSemanticScale(lbl);
     group.scaleX(scale);
     group.scaleY(scale);

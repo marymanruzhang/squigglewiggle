@@ -613,6 +613,103 @@ All coordinates are in pixels relative to the image. Keep bbox tight around each
         return jsonify({"error": str(e)}), 500
 
 
+# ── /api/detect-joints ─────────────────────────────────────────────────────────
+# Returns normalized [0-1] joint positions for LBS skeletal animation.
+# Coordinates are fractions of image width/height so GPT-4o doesn't need to
+# know exact pixel dimensions — the browser converts to pixels.
+@app.route("/api/detect-joints", methods=["POST"])
+def detect_joints():
+    data = request.get_json(silent=True) or {}
+    image_data = data.get("image", "")
+    label      = data.get("label", "unknown")
+    category   = data.get("category", "")
+
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        return jsonify({"error": "No API key"}), 500
+
+    # Joint sets per character type
+    JOINT_SETS = {
+        "quadruped": "root, spine, neck, head, hip_L, knee_L, ankle_L, hip_R, knee_R, ankle_R",
+        "biped":     "root, spine, neck, head, shoulder_L, elbow_L, shoulder_R, elbow_R, hip_L, knee_L, ankle_L, hip_R, knee_R, ankle_R",
+        "bird":      "root, spine, neck, head, shoulder_L, elbow_L, shoulder_R, elbow_R, hip_L, ankle_L, hip_R, ankle_R",
+        "fish":      "root, spine, tail_base, tail_tip",
+        "insect":    "root, thorax, head, wing_L, wing_tip_L, wing_R, wing_tip_R, leg_L1, leg_L2, leg_R1, leg_R2",
+    }
+
+    lbl = label.lower()
+    cat = category.lower()
+
+    if any(x in lbl for x in ["butterfly","bee","moth","dragonfly","ant","ladybug"]):
+        jtype, jset = "insect",    JOINT_SETS["insect"]
+    elif any(x in lbl for x in ["fish","shark","whale","dolphin","eel"]):
+        jtype, jset = "fish",      JOINT_SETS["fish"]
+    elif any(x in lbl for x in ["bird","parrot","owl","penguin","duck","chicken"]):
+        jtype, jset = "bird",      JOINT_SETS["bird"]
+    elif any(x in lbl for x in ["human","person","girl","boy","man","woman"]):
+        jtype, jset = "biped",     JOINT_SETS["biped"]
+    elif cat == "ground_animal" or any(x in lbl for x in
+        ["dog","cat","horse","cow","sheep","rabbit","fox","deer","bear","lion",
+         "tiger","wolf","pig","turtle","tortoise","frog","lizard","elephant"]):
+        jtype, jset = "quadruped", JOINT_SETS["quadruped"]
+    else:
+        return jsonify({"error": "not a limbed creature"}), 400
+
+    prompt = f"""Analyze this hand-drawn sketch of a {label} and identify skeleton joint positions.
+
+Return ONLY valid JSON (no extra text):
+{{
+  "type": "{jtype}",
+  "joints": {{
+    "root": [0.50, 0.70],
+    "spine": [0.50, 0.45]
+  }}
+}}
+
+Required joints: {jset}
+
+Rules:
+- Coordinates are NORMALIZED: x = column/imageWidth, y = row/imageHeight  (both 0.0 to 1.0)
+- [0,0] = top-left corner, [1,1] = bottom-right corner
+- root = center of mass / pelvis / body center
+- For quadrupeds: root is belly center; hip_L/R are where front/back legs meet body;
+  knee_L/R are leg midpoints; ankle_L/R are feet
+- Place joints WHERE YOU SEE them on the actual drawing
+- If a joint is not visible or the creature lacks that limb, place it near the body center
+- Return ALL joints listed in: {jset}"""
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 600,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_data, "detail": "high"}}
+        ]}]
+    }
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            result  = json.loads(response.read().decode())
+            content = result["choices"][0]["message"]["content"].strip()
+            cleaned = content.replace("```json","").replace("```","").strip()
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if m: cleaned = m.group(0)
+            return jsonify(json.loads(cleaned))
+    except urllib.error.HTTPError as e:
+        return jsonify({"error": f"HTTP {e.code}: {e.read().decode()}"}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     print("\n  SquiggleWiggle — open http://localhost:5001 in your browser\n")
     app.run(host="0.0.0.0", port=5001, debug=True)
