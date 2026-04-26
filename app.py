@@ -756,19 +756,22 @@ Return ONLY valid JSON (no extra text):
 
 Rules:
 - The LARGER real-world object gets scale 1.0
-- The SMALLER gets a fraction between 0.05 and 1.0  
-- Use real-world intuition (a mountain is enormous vs a sheep; a butterfly is tiny vs a dog)
-- Minimum scale is 0.05 so nothing disappears completely
-- If sizes are similar in real life, both values should be close to 1.0
+- The SMALLER gets a fraction between 0.15 and 1.0
+- IMPORTANT: mountains, buildings, trees, and landscapes are ENORMOUS compared to animals or flowers
+- Minimum scale is 0.15 so nothing disappears
+- If sizes are similar, both values should be close to 1.0
 
-Examples of correct reasoning:
-  dog vs mountain    → dog=0.10, mountain=1.0
-  butterfly vs flower→ butterfly=0.40, flower=1.0
-  person vs elephant → person=0.45, elephant=1.0
-  cat vs dog         → cat=0.85,  dog=1.0
-  tree vs house      → tree=0.90, house=1.0
-  sun vs cloud       → sun=1.0,   cloud=0.55
-  sheep vs mountain  → sheep=0.12, mountain=1.0"""
+Critical examples (memorize these):
+  mountain vs flower → mountain=1.0, flower=0.08  (mountain is thousands of times bigger)
+  mountain vs sheep  → mountain=1.0, sheep=0.12
+  mountain vs dog    → mountain=1.0, dog=0.10
+  tree vs flower     → tree=1.0,    flower=0.30
+  tree vs dog        → tree=1.0,    dog=0.60
+  elephant vs dog    → elephant=1.0, dog=0.45
+  person vs elephant → person=0.45,  elephant=1.0
+  butterfly vs flower→ flower=1.0,   butterfly=0.40
+  cat vs dog         → dog=1.0,      cat=0.85
+  sun vs cloud       → sun=1.0,      cloud=0.55"""
 
     payload = {
         "model": "gpt-4o",
@@ -790,8 +793,8 @@ Examples of correct reasoning:
             m = re.search(r'\{.*\}', cleaned, re.DOTALL)
             if m: cleaned = m.group(0)
             parsed = json.loads(cleaned)
-            ls = max(0.05, min(1.0, float(parsed.get("left_scale",  1.0))))
-            rs = max(0.05, min(1.0, float(parsed.get("right_scale", 1.0))))
+            ls = max(0.15, min(1.0, float(parsed.get("left_scale",  1.0))))
+            rs = max(0.15, min(1.0, float(parsed.get("right_scale", 1.0))))
             reasoning = parsed.get("reasoning", "")
             print(f"[compare-sizes] {label_left}={ls:.2f} vs {label_right}={rs:.2f} — {reasoning}")
             return jsonify({"left_scale": ls, "right_scale": rs, "reasoning": reasoning})

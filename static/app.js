@@ -702,34 +702,34 @@ async function transitionToAnimationStage() {
     }).then(r => r.json()).catch(() => null),
   ]);
 
-  // Derive per-sketch override scales from GPT-4o comparison.
-  // BASE_SIZE = target display size (px) for the "1.0" object.
-  // Falls back to undefined → buildPartGroup uses SEMANTIC_SCALE table.
-  const BASE_SIZE = 260;
+  // Derive per-sketch scale overrides from GPT-4o comparison.
+  // We use a gamma-compressed relative multiplier on top of getSemanticScale:
+  //   multiplier = (aiScale / maxAiScale) ^ GAMMA
+  // GAMMA=0.45 softens extremes so nothing becomes invisible:
+  //   aiScale=1.0  → multiplier=1.0  (larger item keeps its semantic scale)
+  //   aiScale=0.15 → multiplier=0.42 (smaller item is ~42% of the larger)
+  // This prevents the mountain from being microscopically tiny.
+  const GAMMA = 0.45;
   let leftOverride, rightOverride;
   if (sizeComp && !sizeComp.error && sizeComp.left_scale !== undefined) {
     console.log(`[compare-sizes] "${lR.label}"=${sizeComp.left_scale.toFixed(2)} ` +
                 `vs "${rR.label}"=${sizeComp.right_scale.toFixed(2)} — ${sizeComp.reasoning}`);
-    leftOverride  = { aiScale: sizeComp.left_scale,  base: BASE_SIZE };
-    rightOverride = { aiScale: sizeComp.right_scale, base: BASE_SIZE };
+    const maxAi = Math.max(sizeComp.left_scale, sizeComp.right_scale);
+    const lMul  = Math.pow(sizeComp.left_scale  / maxAi, GAMMA);
+    const rMul  = Math.pow(sizeComp.right_scale / maxAi, GAMMA);
+    // Pass the final absolute scale (semantic baseline * relative multiplier)
+    leftOverride  = getSemanticScale(lR.label) * lMul;
+    rightOverride = getSemanticScale(rR.label) * rMul;
+    console.log(`[compare-sizes] scales: "${lR.label}"=${leftOverride.toFixed(3)} "${rR.label}"=${rightOverride.toFixed(3)}`);
   }
 
   // ── Step 4b: Build Konva groups ───────────────────────────────────────────────
-  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, override) {
-    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label);
+  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, overrideScale) {
+    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label,
+                                        overrideScale);
     if (!result) {
       console.warn(`[partAnimator] buildPartGroup failed for "${label}", falling back`);
       return makeGroup(snap.toDataURL('image/png'), cx, cy, agentId);
-    }
-    // If GPT-4o gave us a size comparison, override the interim semantic scale.
-    if (override && result.naturalW) {
-      const nat = Math.max(result.naturalW, result.naturalH);
-      const s   = (override.base * override.aiScale) / nat;
-      result.group.scaleX(s);
-      result.group.scaleY(s);
-      result.w = result.naturalW * s;
-      result.h = result.naturalH * s;
-      console.log(`[compare-sizes] "${label}" scale=${s.toFixed(3)} (${nat}px→${(nat*s).toFixed(0)}px)`);
     }
     return result;
   }
