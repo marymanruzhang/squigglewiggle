@@ -9,7 +9,8 @@ import {
 } from '/static/animation/index.js';
 
 import { STORY_TEMPLATES } from '/static/animation/storyTemplates.js';
-import { detectParts, buildPartGroup } from '/static/animation/partAnimator.js';
+import { detectParts, buildPartGroup, getSemanticScale } from '/static/animation/partAnimator.js';
+
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 const MIN_STROKES_FOR_DONE_BTN = 1;
