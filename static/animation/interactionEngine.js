@@ -90,13 +90,19 @@ export class InteractionEngine {
       if (agent.state !== 'idle') continue;
 
       if (!agent._wander) {
-        // Flying agents settle in place first so you see the idle animation clearly.
-        // Ground animals start walking almost immediately — it looks more natural.
+        // On first wander tick: immediately target the partner agent's position
+        // so they walk straight toward each other rather than wandering randomly.
+        const partner = agents.find(a => a.id !== agent.id);
+        const partnerCenter = partner ? partner.getCenter() : null;
+
         const FLYING = new Set(['flutter','fly','zigzag_fly','hover','orbit']);
         const initDelay = FLYING.has(agent.defaultMotion)
-          ? 3000 + Math.random() * 2000   // 3–5s: flutter/fly beautifully in place
-          : 500  + Math.random() * 1000;  // 0.5–1.5s: ground animals start walking
-        agent._wander = { nextPickTime: now + initDelay, tx: agent.originPos.x, ty: agent.originPos.y };
+          ? 1500 + Math.random() * 1000   // flying: settle briefly then head toward partner
+          : 200  + Math.random() * 300;   // ground: start walking almost immediately
+
+        const tx = partnerCenter ? partnerCenter.x : agent.originPos.x;
+        const ty = partnerCenter ? partnerCenter.y : agent.originPos.y;
+        agent._wander = { nextPickTime: now + initDelay, tx, ty, headingToPartner: true };
       }
 
       const w = agent._wander;
@@ -107,8 +113,18 @@ export class InteractionEngine {
 
       if (isSelfMoving) {
         // ── Self-moving: just update originPos, preset drifts to it ────────
-        w.tx = margin + Math.random() * (W - margin * 2);
-        w.ty = margin + Math.random() * (H - margin * 2);
+        if (w.headingToPartner) {
+          // First time: head toward partner
+          const partner = agents.find(a => a.id !== agent.id);
+          if (partner) {
+            const pc = partner.getCenter();
+            w.tx = pc.x; w.ty = pc.y;
+            w.headingToPartner = false;
+          }
+        } else {
+          w.tx = margin + Math.random() * (W - margin * 2);
+          w.ty = margin + Math.random() * (H - margin * 2);
+        }
         // Drift slowly — set nextPickTime after a travel period
         const dist = Math.hypot(w.tx - agent.originPos.x, w.ty - agent.originPos.y);
         w.nextPickTime = now + Math.max(2000, dist * 15) + Math.random() * 1500;
@@ -117,12 +133,28 @@ export class InteractionEngine {
 
       } else {
         // ── Ground agent: drive via _wanderMoveTo RAF ───────────────────────
-        w.tx = margin + Math.random() * (W - margin * 2);
-        w.ty = margin + Math.random() * (H - margin * 2);
+        if (w.headingToPartner) {
+          // Head toward partner on first move
+          const partner = agents.find(a => a.id !== agent.id);
+          if (partner) {
+            const pc = partner.getCenter();
+            // Stop 120px short so they face each other without overlapping
+            const selfPos = agent.adapter.getPosition();
+            const dx = pc.x - selfPos.x, dy = pc.y - selfPos.y;
+            const d  = Math.hypot(dx, dy);
+            const stopDist = Math.max(80, d - 120);
+            w.tx = selfPos.x + (dx / d) * stopDist;
+            w.ty = selfPos.y + (dy / d) * stopDist;
+          }
+          w.headingToPartner = false;
+        } else {
+          w.tx = margin + Math.random() * (W - margin * 2);
+          w.ty = margin + Math.random() * (H - margin * 2);
+        }
 
         const pos     = agent.adapter.getPosition();
         const dist    = Math.hypot(w.tx - pos.x, w.ty - pos.y);
-        const travelMs = (dist / 90) * 1000;
+        const travelMs = (dist / 70) * 1000;
         w.nextPickTime = now + travelMs + 500 + Math.random() * 1500;
 
         agent.state = 'returning';

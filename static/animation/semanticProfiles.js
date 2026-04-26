@@ -166,6 +166,25 @@ export const PROFILES = {
     tags: ['animal', 'mobile', 'ground_based', 'predator', 'pet', 'curious'],
     motionParams: { walkSpeed: 55 },
   },
+  // ── Reptiles ────────────────────────────────────────────────────────────
+  turtle: {
+    category: 'ground_animal',
+    defaultMotion: 'slow_walk',
+    tags: ['animal', 'mobile', 'ground_based', 'herbivore', 'curious'],
+    motionParams: { walkSpeed: 40, bounceHeight: 4, stepFreq: 0.9 },
+  },
+  tortoise: {
+    category: 'ground_animal',
+    defaultMotion: 'slow_walk',
+    tags: ['animal', 'mobile', 'ground_based', 'herbivore', 'curious'],
+    motionParams: { walkSpeed: 30, bounceHeight: 3, stepFreq: 0.7 },
+  },
+  lizard: {
+    category: 'ground_animal',
+    defaultMotion: 'scurry',
+    tags: ['animal', 'mobile', 'ground_based', 'predator', 'curious'],
+    motionParams: { walkSpeed: 100, bounceHeight: 5 },
+  },
   cow: {
     category: 'ground_animal',
     defaultMotion: 'walk_bounce',

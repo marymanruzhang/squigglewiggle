@@ -1,18 +1,3 @@
-/**
- * SquiggleWiggle AI — Unified Draw + Story Controller
- *
- * Flow:
- *   Phase 1 (DRAW):  Each player draws on their canvas and types a label.
- *                    Both press "✓ Ready!" → Phase 2.
- *
- *   Phase 2 (STORY): Both sketches appear on a shared Konva stage,
- *                    wander around and execute the story interaction layer
- *                    (storyPlanner → storyRunner → storyBeatAnimations).
- *
- * The storyRunner is limited to exactly 2 agents at a time.
- * "New Story" replays with the same sketches; "Draw Again" resets to Phase 1.
- */
-
 import {
   registerRecognizedSketch,
   removeSketch,
@@ -24,613 +9,730 @@ import {
 } from '/static/animation/index.js';
 
 import { STORY_TEMPLATES } from '/static/animation/storyTemplates.js';
+import { detectParts, buildPartGroup } from '/static/animation/partAnimator.js';
 
-// ── Known labels (for autocomplete suggestions) ──────────────────────────────
-const KNOWN_LABELS = [
-  'flower','bee','butterfly','bird','cloud','sun','rabbit','carrot','tree',
-  'cat','dog','fish','pond','mushroom','sheep','umbrella','rain','star',
-  'heart','whale','bear','frog','duck','horse','cow','elephant','leaf',
-  'cactus','bush','grass','river','ocean','rock','mountain','mouse',
-  'lion','tiger','shark','jellyfish','octopus','crab','bat','owl',
-  'parrot','dragon','snake','pig','monkey','ant','spider','cake','apple',
-  'banana','strawberry','house','tent','cup','boat','car','airplane','rocket',
-];
+// ─── Config ───────────────────────────────────────────────────────────────────
+const MIN_STROKES_FOR_DONE_BTN = 1;
 
-// ── DOM refs ─────────────────────────────────────────────────────────────────
-const drawPhase   = document.getElementById('drawPhase');
-const stagePhase  = document.getElementById('stagePhase');
-
-const canvas1     = document.getElementById('canvas1');
-const canvas2     = document.getElementById('canvas2');
-const ctx1        = canvas1.getContext('2d');
-const ctx2        = canvas2.getContext('2d');
-
-const clearBtn1   = document.getElementById('clearBtn1');
-const clearBtn2   = document.getElementById('clearBtn2');
-const doneBtn1    = document.getElementById('doneBtn1');
-const doneBtn2    = document.getElementById('doneBtn2');
-
-const labelInput1 = document.getElementById('labelInput1');
-const labelInput2 = document.getElementById('labelInput2');
-const suggestions1 = document.getElementById('suggestions1');
-const suggestions2 = document.getElementById('suggestions2');
-
-const done1El     = document.getElementById('done1');
-const done2El     = document.getElementById('done2');
-const statusMsg   = document.getElementById('statusMsg');
-
-const storyHeader      = document.getElementById('storyHeader');
-const storyPairLabel   = document.getElementById('storyPairLabel');
-const p1Name           = document.getElementById('p1Name');
-const p2Name           = document.getElementById('p2Name');
-const beatTimeline     = document.getElementById('beatTimeline');
-const storyStageInner  = document.getElementById('storyStageInner');
-
-const replayBtn   = document.getElementById('replayBtn');
-const resetBtn    = document.getElementById('resetBtn');
-
-// ── Per-player state ──────────────────────────────────────────────────────────
-const players = {
-  1: { drawn: false, done: false, label: '', drawing: false,
-       strokes: [], curX: [], curY: [], imageDataURL: null },
-  2: { drawn: false, done: false, label: '', drawing: false,
-       strokes: [], curX: [], curY: [], imageDataURL: null },
+const state = {
+  activeZones: { left: false, right: false },
+  submitted:   { left: false, right: false },
+  drawing: false,
+  drawSettings: {
+    left:  { color: '#1a1a1a', size: 6, erasing: false },
+    right: { color: '#1a1a1a', size: 6, erasing: false },
+  },
+  lastX: 0, lastY: 0,
+  strokesByZone: { left: [], right: [] },
+  currentStroke: null,
+  analyzing: { left: false, right: false },
+  results: { left: null, right: null },
+  svgPaths: { left: [], right: [] },
+  detectionModel: null,
+  stream: null,
+  // Stability state
+  smoothedPersonX: [null, null],
+  zoneMissCount: { left: 0, right: 0 },
 };
 
-// ── Canvas init ───────────────────────────────────────────────────────────────
-function initCtx(ctx) {
-  ctx.fillStyle   = '#ffffff';
-  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+// Detection Constants
+const EMA_ALPHA    = 0.5;  // Very snappy
+const MISS_TO_HIDE = 3;    // Reacts fast to leaving
+const HYSTERESIS   = 0.04; // Very narrow neutral zone
+
+
+// ─── DOM refs ────────────────────────────────────────────────────────────────
+const canvas      = document.getElementById('draw-canvas');
+const ctx         = canvas.getContext('2d');
+const video       = document.getElementById('camera-video');
+const pipCanvas   = document.getElementById('pip-canvas');
+const statusBar   = document.getElementById('status-bar');
+const welcome     = document.getElementById('welcome');
+const startBtn    = document.getElementById('start-btn');
+const zoneLeft    = document.getElementById('zone-left');
+const zoneRight   = document.getElementById('zone-right');
+const doneLeft    = document.getElementById('done-left');
+const doneRight   = document.getElementById('done-right');
+const spinLeft    = document.getElementById('spinner-left');
+const spinRight   = document.getElementById('spinner-right');
+const resultLeft  = document.getElementById('result-left');
+const resultRight = document.getElementById('result-right');
+const catLeft     = document.getElementById('cat-left');
+const catRight    = document.getElementById('cat-right');
+const labelLeft   = document.getElementById('label-left');
+const labelRight  = document.getElementById('label-right');
+const saveAllBtn  = document.getElementById('save-all-btn');
+
+// ─── Canvas resize ───────────────────────────────────────────────────────────
+function resizeCanvas() {
+  canvas.width  = window.innerWidth;
+  canvas.height = window.innerHeight;
+  redrawAll();
+}
+window.addEventListener('resize', resizeCanvas);
+
+// ─── Start ───────────────────────────────────────────────────────────────────
+startBtn.addEventListener('click', async () => {
+  welcome.style.display = 'none';
+  setStatus('Requesting camera…');
+  try {
+    state.stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: 1280, height: 720 } });
+    video.srcObject = state.stream;
+    await video.play();
+    setStatus('Loading person detection…');
+    await loadDetectionModel();
+    resizeCanvas();
+    setStatus('Step in front of the camera!');
+    startDetectionLoop();
+    setupDrawing();
+    setupToolbar();
+  } catch (e) {
+    setStatus('❌ Camera error: ' + e.message);
+    console.error(e);
+  }
+});
+
+// ─── Load BlazeFace ──────────────────────────────────────────────────────────
+async function loadDetectionModel() {
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js');
+  await loadScript('https://cdn.jsdelivr.net/npm/@tensorflow-models/blazeface@0.0.7/dist/blazeface.min.js');
+  state.detectionModel = await blazeface.load();
+  console.log('BlazeFace ready');
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) return resolve();
+    const s = document.createElement('script');
+    s.src = src;
+    s.onload = resolve;
+    s.onerror = () => reject(new Error(`Failed to load script: ${src}`));
+    document.head.appendChild(s);
+  });
+}
+
+// ─── Person detection loop (BlazeFace) ───────────────────────────────────────
+function startDetectionLoop() {
+  // Draw center split line on PiP canvas
+  pipCanvas.width  = pipCanvas.offsetWidth  || 180;
+  pipCanvas.height = pipCanvas.offsetHeight || 120;
+  drawPipSplitLine();
+
+  setInterval(async () => {
+    if (!state.detectionModel || video.readyState < 2) return;
+    try {
+      // BlazeFace estimateFaces(video, returnTensors)
+      const preds = await state.detectionModel.estimateFaces(video, false);
+      // Convert face boxes to 'people' format for the existing updateZones logic
+      const faces = preds.map(p => {
+        const [x1, y1] = p.topLeft;
+        const [x2, y2] = p.bottomRight;
+        return { bbox: [x1, y1, x2 - x1, y2 - y1], score: 0.9 };
+      });
+      updateZones(faces);
+    } catch (e) { console.warn('Face detection error:', e); }
+  }, 100);
+}
+
+function drawPipSplitLine() {
+  const ctx2 = pipCanvas.getContext('2d');
+  const pw = pipCanvas.width;
+  const ph = pipCanvas.height;
+  ctx2.clearRect(0, 0, pw, ph);
+  ctx2.save();
+  ctx2.setLineDash([3, 3]);
+  ctx2.strokeStyle = 'rgba(255,255,255,0.6)';
+  ctx2.lineWidth = 1;
+  ctx2.beginPath();
+  ctx2.moveTo(pw / 2, 0);
+  ctx2.lineTo(pw / 2, ph);
+  ctx2.stroke();
+  ctx2.restore();
+}
+
+function updateZones(faces) {
+  const W = video.videoWidth || 640;
+
+  // 1. Convert face detections to mirrored center-X
+  const currentDetections = faces.slice(0, 2).map(f => {
+    const rawX = f.bbox[0] + f.bbox[2] / 2;
+    return 1 - rawX / W; // mirrored X
+  });
+
+  // 2. Assign detections to slots (Nearest Neighbor)
+  let newPositions = [null, null];
+  if (currentDetections.length > 0) {
+    if (currentDetections.length === 1) {
+      const det = currentDetections[0];
+      const d0 = state.smoothedPersonX[0] !== null ? Math.abs(det - state.smoothedPersonX[0]) : 999;
+      const d1 = state.smoothedPersonX[1] !== null ? Math.abs(det - state.smoothedPersonX[1]) : 999;
+      newPositions[d0 <= d1 ? 0 : 1] = det;
+    } else {
+      const [d1, d2] = currentDetections;
+      const prev0 = state.smoothedPersonX[0] ?? 0.25;
+      const prev1 = state.smoothedPersonX[1] ?? 0.75;
+      if ((Math.abs(d1 - prev0) + Math.abs(d2 - prev1)) <= (Math.abs(d2 - prev0) + Math.abs(d1 - prev1))) {
+        newPositions[0] = d1; newPositions[1] = d2;
+      } else {
+        newPositions[0] = d2; newPositions[1] = d1;
+      }
+    }
+  }
+
+  // 3. Update EMA
+  for (let i = 0; i < 2; i++) {
+    if (newPositions[i] !== null) {
+      const prev = state.smoothedPersonX[i];
+      state.smoothedPersonX[i] = prev === null ? newPositions[i] : prev + (newPositions[i] - prev) * EMA_ALPHA;
+    }
+  }
+
+  // 4. Decide wanted zones
+  const wanted = { left: false, right: false };
+  for (let i = 0; i < 2; i++) {
+    const mx = state.smoothedPersonX[i];
+    if (mx === null) continue;
+    
+    if (mx < 0.5 - HYSTERESIS) {
+      wanted.left = true;
+    } else if (mx > 0.5 + HYSTERESIS) {
+      wanted.right = true;
+    } else {
+      if (state.activeZones.left && mx < 0.5 + HYSTERESIS) wanted.left = true;
+      else if (state.activeZones.right && mx > 0.5 - HYSTERESIS) wanted.right = true;
+      else if (mx < 0.5) wanted.left = true; else wanted.right = true;
+    }
+  }
+
+  // 5. Activate/Deactivate
+  ['left', 'right'].forEach(zone => {
+    if (wanted[zone]) {
+      state.zoneMissCount[zone] = 0;
+      setZoneActive(zone, true);
+    } else {
+      state.zoneMissCount[zone]++;
+      if (state.zoneMissCount[zone] >= MISS_TO_HIDE) {
+        if (!state.submitted[zone]) {
+          setZoneActive(zone, false);
+          if (zone === 'left') state.smoothedPersonX[0] = null;
+          else state.smoothedPersonX[1] = null;
+        }
+      }
+    }
+  });
+
+  if (faces.length === 0 && !wanted.left && !wanted.right) {
+    setStatus('Step closer to the camera 👋');
+  } else {
+    const count = (wanted.left ? 1 : 0) + (wanted.right ? 1 : 0);
+    setStatus(count === 1 ? '1 inventor detected 🎨' : '2 inventors detected 🎨🎨');
+  }
+}
+
+function setZoneActive(side, active) {
+  if (state.activeZones[side] === active) return;
+  state.activeZones[side] = active;
+  const zone    = side === 'left' ? zoneLeft    : zoneRight;
+  const toolbar = document.getElementById(`toolbar-${side}`);
+  if (active) {
+    zone.classList.add('active');
+    if (!state.submitted[side]) toolbar.classList.add('active');
+  } else {
+    // Always hide toolbar when person leaves
+    toolbar.classList.remove('active');
+    // Only hide zone if NOT yet submitted — submitted zones keep SVG visible
+    if (!state.submitted[side]) {
+      zone.classList.remove('active');
+    }
+  }
+  redrawAll();
+}
+
+// ─── Drawing ──────────────────────────────────────────────────────────────────
+function setupDrawing() {
+  canvas.addEventListener('pointerdown', onPointerDown);
+  canvas.addEventListener('pointermove', onPointerMove);
+  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointerleave', onPointerUp);
+  canvas.setPointerCapture = canvas.setPointerCapture || (() => {});
+}
+
+function getZoneForX(x) {
+  return x < window.innerWidth / 2 ? 'left' : 'right';
+}
+
+function onPointerDown(e) {
+  if (e.button !== undefined && e.button !== 0) return;
+  const zone = getZoneForX(e.clientX);
+  if (!state.activeZones[zone]) return;
+  if (state.analyzing[zone]) return;
+
+  const s = state.drawSettings[zone];
+  state.drawing = true;
+  state.lastX = e.clientX;
+  state.lastY = e.clientY;
+
+  state.currentStroke = {
+    zone,
+    color: s.erasing ? 'rgba(0,0,0,1)' : s.color,
+    size:  s.erasing ? s.size * 4 : s.size,
+    points: [{ x: e.clientX, y: e.clientY }],
+    erasing: s.erasing,
+  };
+}
+
+function onPointerMove(e) {
+  if (!state.drawing || !state.currentStroke) return;
+  const zone = getZoneForX(e.clientX);
+  if (zone !== state.currentStroke.zone) return; // Don't cross zones
+
+  state.currentStroke.points.push({ x: e.clientX, y: e.clientY });
+
+  // Draw incrementally
+  ctx.globalCompositeOperation = state.currentStroke.erasing ? 'destination-out' : 'source-over';
+  ctx.beginPath();
+  ctx.strokeStyle = state.currentStroke.color;
+  ctx.lineWidth   = state.currentStroke.size;
   ctx.lineCap     = 'round';
   ctx.lineJoin    = 'round';
-  ctx.lineWidth   = 7;
-  ctx.strokeStyle = '#1a1a2e';
-}
-initCtx(ctx1);
-initCtx(ctx2);
+  ctx.moveTo(state.lastX, state.lastY);
+  ctx.lineTo(e.clientX, e.clientY);
+  ctx.stroke();
+  ctx.globalCompositeOperation = 'source-over'; // reset
 
-// ── Drawing handlers ──────────────────────────────────────────────────────────
-function getXY(e, cvs) {
-  const r  = cvs.getBoundingClientRect();
-  const sx = cvs.width  / r.width;
-  const sy = cvs.height / r.height;
-  const ev = e.touches ? e.touches[0] : e;
-  return { x: (ev.clientX - r.left) * sx, y: (ev.clientY - r.top) * sy };
+  state.lastX = e.clientX;
+  state.lastY = e.clientY;
 }
 
-function makeHandlers(pid, ctx) {
-  const p = players[pid];
-  return {
-    start(e) {
-      e.preventDefault();
-      p.drawing = true;
-      p.drawn   = true;
-      const { x, y } = getXY(e, ctx.canvas);
-      p.curX = [x]; p.curY = [y];
-      ctx.beginPath(); ctx.moveTo(x, y);
-      checkDoneEnabled(pid);
-    },
-    move(e) {
-      if (!p.drawing) return;
-      e.preventDefault();
-      const { x, y } = getXY(e, ctx.canvas);
-      ctx.lineTo(x, y); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(x, y);
-      p.curX.push(x); p.curY.push(y);
-    },
-    end() {
-      if (p.drawing && p.curX.length > 0) {
-        p.strokes.push([p.curX.slice(), p.curY.slice()]);
-        p.curX = []; p.curY = [];
-      }
-      p.drawing = false;
-    },
-  };
-}
+function onPointerUp() {
+  if (!state.drawing || !state.currentStroke) return;
+  state.drawing = false;
 
-function attach(cvs, h) {
-  cvs.addEventListener('mousedown',  h.start);
-  cvs.addEventListener('mousemove',  h.move);
-  cvs.addEventListener('mouseup',    h.end);
-  cvs.addEventListener('mouseleave', h.end);
-  cvs.addEventListener('touchstart', h.start, { passive: false });
-  cvs.addEventListener('touchmove',  h.move,  { passive: false });
-  cvs.addEventListener('touchend',   h.end);
-}
+  if (state.currentStroke.points.length > 1) {
+    const { zone } = state.currentStroke;
+    state.strokesByZone[zone].push(state.currentStroke);
 
-attach(canvas1, makeHandlers(1, ctx1));
-attach(canvas2, makeHandlers(2, ctx2));
-
-// ── Label autocomplete ────────────────────────────────────────────────────────
-function makeSuggestions(input, suggestEl, pid) {
-  input.addEventListener('input', () => {
-    const q = input.value.trim().toLowerCase();
-    suggestEl.innerHTML = '';
-    if (q.length < 1) return;
-    const matches = KNOWN_LABELS.filter(l => l.startsWith(q)).slice(0, 6);
-    matches.forEach(m => {
-      const chip = document.createElement('button');
-      chip.className   = 'suggest-chip';
-      chip.textContent = m;
-      chip.type        = 'button';
-      chip.addEventListener('mousedown', (e) => {
-        e.preventDefault(); // keep focus
-        input.value = m;
-        suggestEl.innerHTML = '';
-        players[pid].label = m;
-        checkDoneEnabled(pid);
-      });
-      suggestEl.appendChild(chip);
+    // Update SVG path record
+    const pts = state.currentStroke.points;
+    let d = `M${pts[0].x},${pts[0].y}`;
+    pts.slice(1).forEach(p => d += ` L${p.x},${p.y}`);
+    state.svgPaths[zone].push({
+      d, color: state.currentStroke.color, size: state.currentStroke.size,
+      erasing: state.currentStroke.erasing,
     });
-    players[pid].label = input.value.trim().toLowerCase();
-    checkDoneEnabled(pid);
+
+    // Show/hide done button based on non-erase strokes
+    updateDoneBtn(zone);
+  }
+  state.currentStroke = null;
+}
+
+function updateDoneBtn(zone) {
+  const nonErase = state.strokesByZone[zone].filter(s => !s.erasing);
+  const btn = zone === 'left' ? doneLeft : doneRight;
+  if (nonErase.length >= MIN_STROKES_FOR_DONE_BTN) {
+    btn.classList.add('visible');
+  } else {
+    btn.classList.remove('visible');
+  }
+  // Update undo button disabled state
+  const undoBtn = document.getElementById(`undo-${zone}`);
+  if (undoBtn) undoBtn.disabled = state.strokesByZone[zone].length === 0;
+}
+
+// ─── Redraw all ───────────────────────────────────────────────────────────────
+function redrawAll() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ['left', 'right'].forEach(zone => {
+    // Only draw strokes if the zone is currently active (person present) OR has been submitted
+    if (!state.activeZones[zone] && !state.submitted[zone]) return;
+
+    state.strokesByZone[zone].forEach(stroke => {
+      if (stroke.points.length < 2) return;
+      ctx.globalCompositeOperation = stroke.erasing ? 'destination-out' : 'source-over';
+      ctx.beginPath();
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth   = stroke.size;
+      ctx.lineCap     = 'round';
+      ctx.lineJoin    = 'round';
+      stroke.points.forEach((p, i) => {
+        if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    });
   });
-  input.addEventListener('blur', () => setTimeout(() => suggestEl.innerHTML = '', 200));
+  ctx.globalCompositeOperation = 'source-over'; // always reset
 }
 
-makeSuggestions(labelInput1, suggestions1, 1);
-makeSuggestions(labelInput2, suggestions2, 2);
+// ─── I'm Done ────────────────────────────────────────────────────────────────
+doneLeft.addEventListener('click', () => analyzeZone('left'));
+doneRight.addEventListener('click', () => analyzeZone('right'));
 
-// ── Done button gating ────────────────────────────────────────────────────────
-function checkDoneEnabled(pid) {
-  const p = players[pid];
-  const input = pid === 1 ? labelInput1 : labelInput2;
-  p.label = input.value.trim().toLowerCase();
-  const enabled = p.drawn && p.label.length >= 1;
-  const btn = pid === 1 ? doneBtn1 : doneBtn2;
-  btn.disabled = !enabled;
-  updateStatus();
+async function analyzeZone(zone) {
+  if (state.analyzing[zone]) return;
+  state.analyzing[zone] = true;
+
+  const btn  = zone === 'left' ? doneLeft  : doneRight;
+  const spin = zone === 'left' ? spinLeft  : spinRight;
+  const res  = zone === 'left' ? resultLeft : resultRight;
+  const catEl  = zone === 'left' ? catLeft  : catRight;
+  const lblEl  = zone === 'left' ? labelLeft : labelRight;
+
+  btn.disabled = true;
+  spin.classList.add('visible');
+
+  // Capture zone canvas (includes cloud SVG)
+  const zoneCanvas = await captureZoneCanvas(zone);
+  const dataUrl = zoneCanvas.toDataURL('image/png');
+
+  try {
+    const result = await identifyDoodle(dataUrl);
+    state.results[zone] = result;
+    state.submitted[zone] = true;
+
+    // Mark zone as submitted — hides text prompt, keeps SVG
+    const zoneEl = zone === 'left' ? zoneLeft : zoneRight;
+    zoneEl.classList.add('submitted');
+
+    catEl.textContent  = result.category;
+    lblEl.textContent  = result.label;
+        res.classList.add('visible');
+    spin.classList.remove('visible');
+
+    // NEW: Check if both zones are submitted to transition to animation stage
+    if (state.submitted.left && state.submitted.right) {
+      setTimeout(() => transitionToAnimationStage(), 1000);
+    }
+    
+    checkSaveAll();
+  } catch (e) {
+    spin.classList.remove('visible');
+    btn.disabled = false;
+    btn.textContent = '⚠ Retry';
+    state.analyzing[zone] = false;
+    console.error('Analysis failed:', e);
+    setStatus('⚠ API error – check console');
+  }
 }
 
-// ── Clear ─────────────────────────────────────────────────────────────────────
-function clearPlayer(pid, ctx) {
-  initCtx(ctx);
-  const p = players[pid];
-  Object.assign(p, { drawn: false, done: false, label: '',
-                     strokes: [], curX: [], curY: [], drawing: false, imageDataURL: null });
-  (pid === 1 ? labelInput1 : labelInput2).value = '';
-  (pid === 1 ? done1El     : done2El    ).textContent = '';
-  (pid === 1 ? doneBtn1    : doneBtn2   ).disabled = true;
-  updateStatus();
-}
+async function captureZoneCanvas(zone) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const half = W / 2;
+  const xOff = zone === 'left' ? 0 : half;
+  const offscreen = document.createElement('canvas');
+  offscreen.width  = half;
+  offscreen.height = H;
+  const oc = offscreen.getContext('2d');
 
-clearBtn1.addEventListener('click', () => clearPlayer(1, ctx1));
-clearBtn2.addEventListener('click', () => clearPlayer(2, ctx2));
+  // 1. Background
+  oc.fillStyle = '#f8f5f0';
+  oc.fillRect(0, 0, half, H);
 
-// ── Done buttons ──────────────────────────────────────────────────────────────
-function markDone(pid, ctx) {
-  const p = players[pid];
-  if (!p.drawn || !p.label) return;
-  p.done = true;
-
-  // Capture at CSS display size so the image matches what the user actually saw.
-  // Canvas internal buffer is 340×300, but CSS stretches it to fill its container.
-  const cvs  = ctx.canvas;
-  const rect = cvs.getBoundingClientRect();
-  const cssW = Math.round(rect.width)  || cvs.width;
-  const cssH = Math.round(rect.height) || cvs.height;
-  const norm = document.createElement('canvas');
-  norm.width  = cssW;
-  norm.height = cssH;
-  norm.getContext('2d').drawImage(cvs, 0, 0, cssW, cssH);
-  p.imageDataURL = norm.toDataURL('image/png');
-
-  (pid === 1 ? done1El : done2El).textContent = `✓ ${p.label}`;
-  updateStatus();
-  if (players[1].done && players[2].done) beginStory();
-}
-
-doneBtn1.addEventListener('click', () => markDone(1, ctx1));
-doneBtn2.addEventListener('click', () => markDone(2, ctx2));
-
-// ── Status text ───────────────────────────────────────────────────────────────
-function updateStatus() {
-  const { drawn: d1, done: dn1, label: l1 } = players[1];
-  const { drawn: d2, done: dn2, label: l2 } = players[2];
-
-  if (dn1 && dn2) { statusMsg.textContent = 'Let the story begin! ✨'; return; }
-
-  const p1ready = d1 && l1;
-  const p2ready = d2 && l2;
-
-  if (!d1 && !d2) { statusMsg.textContent = 'Draw something on each side, then name it!'; return; }
-  if (!p1ready && !p2ready) { statusMsg.textContent = 'Draw + label each sketch, then press ✓ Ready!'; return; }
-  if (p1ready && !dn1 && !p2ready) { statusMsg.textContent = `Player 1 has "${l1}" — waiting for Player 2…`; return; }
-  if (p2ready && !dn2 && !p1ready) { statusMsg.textContent = `Player 2 has "${l2}" — waiting for Player 1…`; return; }
-  if (dn1 && !p2ready) { statusMsg.textContent = `Player 1 is ready with "${l1}" — Player 2, your turn!`; return; }
-  if (dn2 && !p1ready) { statusMsg.textContent = `Player 2 is ready with "${l2}" — Player 1, your turn!`; return; }
-  if (p1ready && !dn1 && dn2) { statusMsg.textContent = `Player 2 (${l2}) is waiting — Player 1, press ✓ Ready!`; return; }
-  if (p2ready && !dn2 && dn1) { statusMsg.textContent = `Player 1 (${l1}) is waiting — Player 2, press ✓ Ready!`; return; }
-  statusMsg.textContent = 'Both ready — press ✓ Ready! to start the story!';
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// PHASE 2: STORY STAGE
-// ══════════════════════════════════════════════════════════════════════════════
-
-let konvaStage   = null;
-let konvaLayer   = null;
-let agentRefs    = {};   // { 1: SceneAgent, 2: SceneAgent }
-// Labels are now Konva Text nodes inside each group — no separate DOM tracking needed.
-
-// ── Show the story stage ──────────────────────────────────────────────────────
-async function beginStory() {
-  // Capture canvases before switching phases
-  players[1].imageDataURL = players[1].imageDataURL || ctx1.canvas.toDataURL('image/png');
-  players[2].imageDataURL = players[2].imageDataURL || ctx2.canvas.toDataURL('image/png');
-
-  // Update name labels
-  p1Name.textContent = players[1].label;
-  p2Name.textContent = players[2].label;
-
-  // Switch to stage phase
-  drawPhase.classList.add('hidden');
-  stagePhase.classList.remove('hidden');
-
-  await setupKonva();
-  await spawnBothSketches();
-  interceptStoryLogs();
-  clearAllCooldowns();
-  // Brief settle period: let agents animate in place before stories fire
-  await new Promise(r => setTimeout(r, 1500));
-  startInteractionEngine();
-}
-
-// ── Konva stage setup ─────────────────────────────────────────────────────────
-async function setupKonva() {
-  // Tear down previous instance if any
-  if (konvaStage) {
-    stopInteractionEngine();
-    getRegistry().getAll().forEach(a => removeSketch(a.id));
-    konvaStage.destroy();
-    konvaStage = null;
-    konvaLayer = null;
-    Object.values(agentBadges).forEach(b => b.remove());
-    agentBadges = {};
-    agentRefs   = {};
+  // 2. Draw cloud SVG at its screen position
+  const cloudEl = document.querySelector(`#zone-${zone} .cloud-svg`);
+  if (cloudEl) {
+    const rect = cloudEl.getBoundingClientRect();
+    let svgStr = new XMLSerializer().serializeToString(cloudEl);
+    if (!svgStr.includes('xmlns=')) {
+      svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+    }
+    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+    const url  = URL.createObjectURL(blob);
+    await new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        oc.drawImage(img, rect.left - xOff, rect.top, rect.width, rect.height);
+        URL.revokeObjectURL(url);
+        resolve();
+      };
+      img.onerror = resolve;
+      img.src = url;
+    });
   }
 
-  storyStageInner.innerHTML = '';
+  // 3. User strokes on top
+  oc.drawImage(canvas, xOff, 0, half, H, 0, 0, half, H);
+  return offscreen;
+}
 
-  // IMPORTANT: .hidden uses display:none. After removing it, the browser needs
-  // a full layout reflow before getBoundingClientRect() returns correct values.
-  // A single requestAnimationFrame is not enough — use a 100ms pause instead.
-  storyStageInner.offsetHeight; // force reflow
-  await new Promise(r => setTimeout(r, 100));
+async function identifyDoodle(dataUrl) {
+  const resp = await fetch('/api/classify-sketch', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ image: dataUrl }),
+  });
 
-  const rect = storyStageInner.getBoundingClientRect();
-  const W = Math.round(rect.width)  || 800;
-  const H = Math.round(rect.height) || 420;
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`Server Error ${resp.status}: ${err}`);
+  }
 
-  console.log(`[SquiggleWiggle] Stage size: ${W}×${H}`);
+  const data = await resp.json();
+  if (data.error) {
+      throw new Error(data.error);
+  }
+  return data;
+}
 
-  konvaStage = new Konva.Stage({ container: 'storyStageInner', width: W, height: H });
+// ─── Save all ────────────────────────────────────────────────────────────────
+function checkSaveAll() {
+  const hasAny = state.results.left || state.results.right;
+  if (hasAny) saveAllBtn.classList.add('visible');
+}
+
+saveAllBtn.addEventListener('click', saveResults);
+
+async function saveResults() {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const exportData = [];
+
+  for (const zone of ['left', 'right']) {
+    if (!state.results[zone]) continue;
+
+    // PNG (async — composites cloud + strokes)
+    const zoneCanvas = await captureZoneCanvas(zone);
+    const pngDataUrl = zoneCanvas.toDataURL('image/png');
+    downloadDataUrl(pngDataUrl, `doodle_${zone}_${timestamp}.png`);
+
+    const record = {
+      zone,
+      timestamp,
+      category: state.results[zone].category,
+      label:    state.results[zone].label,
+      description: state.results[zone].description,
+      svgPaths: state.svgPaths[zone],
+      canvasWidth:  window.innerWidth / 2,
+      canvasHeight: window.innerHeight,
+    };
+    exportData.push(record);
+  }
+
+  const json = JSON.stringify(exportData, null, 2);
+  const blob = new Blob([json], { type: 'application/json' });
+  downloadDataUrl(URL.createObjectURL(blob), `doodles_${timestamp}.json`);
+  setStatus('✅ Saved!');
+}
+
+function downloadDataUrl(url, filename) {
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// ─── Toolbar ──────────────────────────────────────────────────────────────────
+function setupToolbar() {
+  // Color swatches — scoped per zone
+  document.querySelectorAll('.color-swatch').forEach(el => {
+    el.addEventListener('click', () => {
+      const zone = el.dataset.zone;
+      state.drawSettings[zone].color   = el.dataset.color;
+      state.drawSettings[zone].erasing = false;
+      // Update selected state only within this zone's toolbar
+      document.querySelectorAll(`#toolbar-${zone} .color-swatch`)
+        .forEach(s => s.classList.remove('selected'));
+      el.classList.add('selected');
+      document.getElementById(`eraser-${zone}`).classList.remove('selected');
+    });
+  });
+
+  // Size buttons — scoped per zone
+  document.querySelectorAll('.size-btn').forEach(el => {
+    el.addEventListener('click', () => {
+      const zone = el.dataset.zone;
+      state.drawSettings[zone].size = parseInt(el.dataset.size);
+      document.querySelectorAll(`#toolbar-${zone} .size-btn`)
+        .forEach(s => s.classList.remove('selected'));
+      el.classList.add('selected');
+    });
+  });
+
+  // Erasers — one per zone
+  ['left', 'right'].forEach(zone => {
+    document.getElementById(`eraser-${zone}`).addEventListener('click', function() {
+      state.drawSettings[zone].erasing = !state.drawSettings[zone].erasing;
+      this.classList.toggle('selected', state.drawSettings[zone].erasing);
+    });
+
+    // Undo button — initially disabled
+    const undoBtn = document.getElementById(`undo-${zone}`);
+    undoBtn.disabled = true;
+    undoBtn.addEventListener('click', () => undoZone(zone));
+  });
+}
+
+function undoZone(zone) {
+  if (state.strokesByZone[zone].length === 0) return;
+  state.strokesByZone[zone].pop();
+  state.svgPaths[zone].pop();
+  redrawAll();
+  updateDoneBtn(zone);
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function setStatus(msg) {
+  statusBar.textContent = msg;
+}
+
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  PHASE 2 — Seamless In-Place Animation
+//  When both users submit:
+//   1. Capture each zone's canvas (mountain SVG + user strokes) before hiding
+//   2. Fade out zone overlays, toolbars, buttons — white background stays
+//   3. Mount a transparent Konva stage directly on top of #app
+//   4. Render each sketch into a Konva group (white stripped)
+//   5. Register both with the animation engine using label+category from GPT
+// ══════════════════════════════════════════════════════════════════════════════
+
+let konvaStage = null;
+let konvaLayer = null;
+
+async function transitionToAnimationStage() {
+
+  // ── Step 1: Capture BEFORE hiding (zones must still be visible in DOM) ──
+  const leftSnap  = await captureZoneCanvas('left');
+  const rightSnap = await captureZoneCanvas('right');
+
+  // ── Step 2: Fade out zone chrome, keep white background ─────────────────
+  ['left', 'right'].forEach(zone => {
+    const zoneEl = document.getElementById(`zone-${zone}`);
+    if (zoneEl) { zoneEl.style.transition = 'opacity 0.5s'; zoneEl.style.opacity = '0'; }
+    setTimeout(() => { if (zoneEl) zoneEl.style.display = 'none'; }, 550);
+
+    const tb = document.getElementById(`toolbar-${zone}`);
+    if (tb) tb.style.display = 'none';
+
+    const dn = document.getElementById(`done-${zone}`);
+    if (dn) dn.style.display = 'none';
+
+    const rs = document.getElementById(`result-${zone}`);
+    if (rs) rs.style.display = 'none';
+
+    const sp = document.getElementById(`spinner-${zone}`);
+    if (sp) sp.style.display = 'none';
+  });
+
+  canvas.style.display = 'none';
+  if (saveAllBtn) saveAllBtn.style.display = 'none';
+  if (statusBar)  { statusBar.style.transition = 'opacity 0.5s'; statusBar.style.opacity = '0'; }
+
+  // ── Step 3: Mount a transparent Konva overlay on #app ────────────────────
+  const app = document.getElementById('app');
+  const W   = app.offsetWidth  || window.innerWidth;
+  const H   = app.offsetHeight || window.innerHeight;
+
+  // Destroy old stage if present
+  if (konvaStage) { konvaStage.destroy(); konvaStage = null; konvaLayer = null; }
+
+  const overlay = document.createElement('div');
+  overlay.id = 'konva-overlay';
+  overlay.style.cssText = 'position:absolute;top:0;left:0;width:100%;height:100%;z-index:600;';
+  app.appendChild(overlay);
+
+  konvaStage = new Konva.Stage({ container: overlay, width: W, height: H });
   konvaLayer = new Konva.Layer();
   konvaStage.add(konvaLayer);
-
   getEngine().resize(W, H);
-}
 
+  // ── Step 4: Strip white background from a canvas snapshot ────────────────
+  function stripWhite(srcCanvas) {
+    const tmp = document.createElement('canvas');
+    tmp.width = srcCanvas.width; tmp.height = srcCanvas.height;
+    const tc = tmp.getContext('2d');
+    tc.drawImage(srcCanvas, 0, 0);
+    const id = tc.getImageData(0, 0, tmp.width, tmp.height);
+    const d = id.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const brightness = (d[i] + d[i+1] + d[i+2]) / 3;
+      if (brightness > 235) {
+        d[i+3] = 0;
+      } else if (brightness > 210) {
+        d[i+3] = Math.round(d[i+3] * (235 - brightness) / 25);
+      }
+    }
+    tc.putImageData(id, 0, 0);
+    return tmp.toDataURL('image/png');
+  }
 
-// ── Spawn both players' sketches on the Konva stage ──────────────────────────
-async function spawnBothSketches() {
-  const W = konvaStage.width();
-  const H = konvaStage.height();
-  const SIZE = 200;
-
-  const CX = W * 0.5;
-  const CY = H * 0.5;
-  const SPREAD = 220;
-  const positions = [
-    { x: CX - SPREAD / 2, y: CY },
-    { x: CX + SPREAD / 2, y: CY },
-  ];
-
-  for (let pid = 1; pid <= 2; pid++) {
-    const p   = players[pid];
-    const pos = positions[pid - 1];
-    const id  = `player${pid}`;
-
-    // Build Konva group (transparent sketch with pastel fill, no white background)
-    const group = await makeKonvaGroup(p.imageDataURL, p.label, pos.x, pos.y, SIZE, id);
-
-    const agent = registerRecognizedSketch({
-      id,
-      label:      p.label,
-      confidence: 1.0,
-      bbox:       { x: pos.x - SIZE/2, y: pos.y - SIZE/2, width: SIZE, height: SIZE },
-      layerRef:   group,
-    });
-
-    agentRefs[pid] = agent;
-
-    group.on('dragend', () => {
-      const gx = group.x(), gy = group.y();
-      agent.bbox      = { x: gx - SIZE/2, y: gy - SIZE/2, width: SIZE, height: SIZE };
-      agent.originPos = { x: gx, y: gy };
-      if (agent._wander) agent._wander.nextPickTime = Date.now() + 800;
+  // Build a Konva.Image from a stripped canvas dataURL.
+  // We render at 1:1 scale — the captured canvas is already the correct
+  // half-screen size, so we place it left-edge at 0 for left zone and
+  // at W/2 for right zone (agentId encodes which side).
+  function makeGroup(dataURL, cx, cy, agentId) {
+    return new Promise(resolve => {
+      const img = new window.Image();
+      img.onload = () => {
+        // Place the image so its visual center is at (cx, cy)
+        const dw = img.width;
+        const dh = img.height;
+        const kImg = new Konva.Image({ image: img, x: -dw/2, y: -dh/2, width: dw, height: dh });
+        const g = new Konva.Group({ x: cx, y: cy, id: agentId });
+        g.add(kImg);
+        konvaLayer.add(g);
+        konvaLayer.draw();
+        resolve({ group: g, w: dw, h: dh });
+      };
+      img.onerror = () => resolve(null);
+      img.src = dataURL;
     });
   }
-}
 
-// ── Build a Konva group from a canvas data URL ────────────────────────────────
-// Auto-crops, strips white background, then renders centered on (cx, cy).
-// The label is baked in as a Konva.Text node so it moves with the sketch.
-function makeKonvaGroup(dataURL, labelText, cx, cy, size, id) {
-  return new Promise(resolve => {
-    const img = new window.Image();
-    img.onload = () => {
-      // ── Step 1: auto-crop to drawn content ─────────────────────────────
-      const src   = document.createElement('canvas');
-      src.width   = img.width;
-      src.height  = img.height;
-      const sctx  = src.getContext('2d');
-      sctx.drawImage(img, 0, 0);
+  const lR = state.results.left;
+  const rR = state.results.right;
 
-      const idata = sctx.getImageData(0, 0, src.width, src.height);
-      const d     = idata.data;
-      let minX = src.width, minY = src.height, maxX = 0, maxY = 0;
+  // ── Step 4a: Detect body parts for each sketch (runs in parallel with canvas strip) ──
+  // We send the zone canvas data URLs to the backend for GPT-4o part detection.
+  const leftDataURL  = leftSnap.toDataURL('image/png');
+  const rightDataURL = rightSnap.toDataURL('image/png');
 
-      for (let y = 0; y < src.height; y++) {
-        for (let x = 0; x < src.width; x++) {
-          const i = (y * src.width + x) * 4;
-          if ((d[i] + d[i+1] + d[i+2]) / 3 < 220) {
-            if (x < minX) minX = x; if (x > maxX) maxX = x;
-            if (y < minY) minY = y; if (y > maxY) maxY = y;
-          }
-        }
-      }
-      if (minX > maxX || minY > maxY) {
-        minX = 0; minY = 0; maxX = src.width - 1; maxY = src.height - 1;
-      }
-      const pad = 8;
-      minX = Math.max(0, minX - pad);
-      minY = Math.max(0, minY - pad);
-      maxX = Math.min(src.width  - 1, maxX + pad);
-      maxY = Math.min(src.height - 1, maxY + pad);
-      const cw = maxX - minX + 1, ch = maxY - minY + 1;
+  const [leftParts, rightParts] = await Promise.all([
+    detectParts(leftDataURL,  lR.label),
+    detectParts(rightDataURL, rR.label),
+  ]);
 
-      // ── Step 2: strip white background ──────────────────────────────────
-      const tmp  = document.createElement('canvas');
-      tmp.width  = cw; tmp.height = ch;
-      const tctx = tmp.getContext('2d');
-      tctx.drawImage(src, minX, minY, cw, ch, 0, 0, cw, ch);
-      const od = tctx.getImageData(0, 0, cw, ch);
-      const od_d = od.data;
-      for (let i = 0; i < od_d.length; i += 4) {
-        const br = (od_d[i] + od_d[i+1] + od_d[i+2]) / 3;
-        // More aggressive threshold: strip everything brighter than 200
-        if (br > 200) od_d[i+3] = 0;
-        else if (br > 150) od_d[i+3] = Math.round((200 - br) * (255 / 50));
-      }
-      tctx.putImageData(od, 0, 0);
+  console.log(`[partAnimator] Left parts:`,  leftParts);
+  console.log(`[partAnimator] Right parts:`, rightParts);
 
-      // ── Step 2b: smart flood-fill enclosed regions ───────────────────────
-      // Pick a soft pastel fill color per label for personality
-      const FILL_COLORS = {
-        butterfly: [180, 140, 220, 130], moth: [160, 130, 200, 120],
-        bird: [255, 210, 120, 120],      parrot: [100, 200, 140, 130],
-        fish: [100, 180, 230, 120],      whale: [80, 160, 210, 110],
-        octopus: [190, 130, 200, 120],   shark: [130, 160, 200, 110],
-        flower: [255, 170, 190, 120],    rose: [240, 120, 140, 130],
-        tree: [130, 200, 130, 110],      grass: [140, 210, 140, 100],
-        cat: [230, 190, 150, 110],       dog: [220, 185, 145, 110],
-        rabbit: [230, 215, 205, 110],    sheep: [220, 220, 215, 110],
-        sun: [255, 230, 100, 120],       cloud: [210, 225, 240, 110],
-        cake: [255, 210, 180, 120],      pizza: [255, 200, 140, 120],
-        house: [210, 190, 170, 110],     car: [160, 190, 230, 110],
-      };
-      const lk = labelText.toLowerCase();
-      const fc = FILL_COLORS[lk] || [230, 220, 210, 100]; // warm cream default
+  // ── Step 4b: Build Konva groups (part-based if detection succeeded) ──────────
+  // Centers: left at W*0.25, right at W*0.75, both vertically centered
+  async function spawnSketch(snap, parts, label, category, cx, cy, agentId) {
+    // Always attempt part-based animation (it handles its own category logic)
+    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label);
+    if (result) return result;
+    console.warn(`[partAnimator] buildPartGroup failed for "${label}", falling back`);
+    // Fallback: single stripped image
+    return makeGroup(snap.toDataURL('image/png'), cx, cy, agentId);
+  }
 
-      // Build ink mask (1 = ink, 0 = empty)
-      const W2 = cw, H2 = ch;
-      const fresh = tctx.getImageData(0, 0, W2, H2);
-      const px = fresh.data;
-      const INK = 160; // darkness threshold for "ink"
-      const mask = new Uint8Array(W2 * H2); // 0=empty, 1=ink
-      for (let i = 0; i < W2 * H2; i++) {
-        const idx = i * 4;
-        const br = (px[idx] + px[idx+1] + px[idx+2]) / 3;
-        const a  = px[idx+3];
-        mask[i] = (a > 60 && br < INK) ? 1 : 0;
-      }
+  const [lg, rg] = await Promise.all([
+    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W * 0.25, H * 0.5, 'agent_left'),
+    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W * 0.75, H * 0.5, 'agent_right'),
+  ]);
 
-      // Dilate ink by 2px to seal gaps in hand-drawn lines
-      const dilated = new Uint8Array(mask);
-      const DILATION = 2;
-      for (let pass = 0; pass < DILATION; pass++) {
-        const prev = new Uint8Array(dilated);
-        for (let y = 1; y < H2 - 1; y++) {
-          for (let x = 1; x < W2 - 1; x++) {
-            if (prev[y * W2 + x]) {
-              dilated[(y-1)*W2+x] = 1; dilated[(y+1)*W2+x] = 1;
-              dilated[y*W2+(x-1)] = 1; dilated[y*W2+(x+1)] = 1;
-            }
-          }
-        }
-      }
+  if (!lg || !rg) {
+    console.error('[SquiggleWiggle] Failed to build Konva groups — aborting animation');
+    return;
+  }
 
-      // BFS flood-fill from all border pixels → marks "outside"
-      const outside = new Uint8Array(W2 * H2);
-      const queue = [];
-      for (let x = 0; x < W2; x++) {
-        if (!dilated[x])              { outside[x] = 1;              queue.push(x); }
-        if (!dilated[(H2-1)*W2+x])   { outside[(H2-1)*W2+x] = 1;   queue.push((H2-1)*W2+x); }
-      }
-      for (let y = 0; y < H2; y++) {
-        if (!dilated[y*W2])           { outside[y*W2] = 1;           queue.push(y*W2); }
-        if (!dilated[y*W2+(W2-1)])    { outside[y*W2+(W2-1)] = 1;    queue.push(y*W2+(W2-1)); }
-      }
-      let qi = 0;
-      const dirs4 = [-1, 1, -W2, W2];
-      while (qi < queue.length) {
-        const cur = queue[qi++];
-        const cx2 = cur % W2, cy2 = Math.floor(cur / W2);
-        for (const d of dirs4) {
-          const nxt = cur + d;
-          if (nxt < 0 || nxt >= W2 * H2) continue;
-          const nx2 = nxt % W2;
-          // Prevent horizontal wrap-around
-          if (Math.abs(cx2 - nx2) > 1) continue;
-          if (!outside[nxt] && !dilated[nxt]) { outside[nxt] = 1; queue.push(nxt); }
-        }
-      }
-
-      // Paint enclosed interior pixels with the pastel fill color
-      // Simultaneously: FULLY erase all exterior (outside) pixels so there is
-      // no residual white haze from antialiasing outside the sketch outline.
-      for (let i = 0; i < W2 * H2; i++) {
-        const idx = i * 4;
-        if (outside[i] && !mask[i]) {
-          // Exterior non-ink → fully transparent
-          px[idx+3] = 0;
-        } else if (!outside[i] && !mask[i]) {
-          // Enclosed interior → pastel fill
-          px[idx]   = fc[0];
-          px[idx+1] = fc[1];
-          px[idx+2] = fc[2];
-          px[idx+3] = fc[3];
-        }
-        // Ink pixels (mask[i]===1) → untouched (already made opaque by step 2)
-      }
-      tctx.putImageData(fresh, 0, 0);
-
-      // ── Step 3: build Konva group (image already has fill baked in) ──────
-      const g = new Konva.Group({ x: cx, y: cy, draggable: true });
-      g.setAttr('agentId', id);
-
-      // Scale the cropped image uniformly to fit inside `size × size`
-      // so the sketch keeps its natural proportions (no stretching)
-      const aspect  = cw / ch;
-      let imgW, imgH;
-      if (aspect >= 1) {
-        imgW = size;
-        imgH = Math.round(size / aspect);
-      } else {
-        imgH = size;
-        imgW = Math.round(size * aspect);
-      }
-
-      g.add(new Konva.Image({
-        image: tmp,
-        // Position at 0,0 with offset = half-size so the transform origin
-        // (used by scaleX wing-flap) is the visual center of the sketch.
-        x: 0, y: 0,
-        offsetX: imgW / 2, offsetY: imgH / 2,
-        width: imgW, height: imgH,
-      }));
-
-      // Label pill sits below the actual rendered image height
-      const displayLabel = labelText.toLowerCase();
-      const charW = 8;
-      const pillW = Math.max(displayLabel.length * charW + 16, 44);
-      const pillH = 22;
-      const pillY = imgH / 2 + 6;   // just below actual image, not full size
-
-      const pill = new Konva.Group({ x: 0, y: pillY });
-
-      pill.add(new Konva.Rect({
-        x: -pillW / 2, y: 0,
-        width: pillW, height: pillH,
-        fill: 'rgba(10,10,30,0.72)',
-        cornerRadius: 11,
-      }));
-      pill.add(new Konva.Text({
-        text: displayLabel,
-        fontSize: 12, fontStyle: 'bold',
-        fontFamily: 'Outfit, Inter, sans-serif',
-        fill: '#fff',
-        width: pillW, height: pillH,
-        align: 'center', verticalAlign: 'middle',
-        x: -pillW / 2, y: 0,
-      }));
-
-      g.add(pill);
-
-      konvaLayer.add(g);
-      konvaLayer.draw();
-      resolve(g);
-    };
-    img.src = dataURL;
-  });
-}
-
-
-// ── Story bar: intercept console.log from storyRunner ────────────────────────
-function interceptStoryLogs() {
-  const orig = console.log.bind(console);
-  console.log = (...a) => {
-    orig(...a);
-    const m = a.join(' ');
-    if (m.includes('[StoryRunner] ▶')) {
-      const match = m.match(/▶ (\S+): "(.+?)" \+ "(.+?)"/);
-      if (match) showBeatTimeline(match[1]);
-    } else if (m.includes('[StoryRunner] ✓')) {
-      // All chips → done after short delay, then clear
-      setTimeout(() => {
-        beatTimeline.querySelectorAll('.beat-chip').forEach(c => c.className = 'beat-chip done');
-        setTimeout(() => { beatTimeline.innerHTML = ''; }, 1200);
-      }, 300);
-    }
-  };
-}
-
-function showBeatTimeline(storyId) {
-  const t = STORY_TEMPLATES.find(t => t.id === storyId);
-  if (!t) return;
-  beatTimeline.innerHTML = '';
-  const chips = [];
-  t.beats.forEach((b, i) => {
-    const chip = document.createElement('span');
-    chip.className   = 'beat-chip';
-    chip.textContent = b.type.replace(/([A-Z])/g, ' $1').trim().toLowerCase();
-    chip.id          = `chip_${i}`;
-    beatTimeline.appendChild(chip);
-    chips.push(chip);
+  // ── Step 5: Register with animation engine ────────────────────────────────
+  registerRecognizedSketch({
+    id: 'agent_left',  label: lR.label,  category: lR.category,  confidence: 0.92,
+    bbox: { x: W*0.25 - lg.w/2, y: H*0.5 - lg.h/2, width: lg.w, height: lg.h },
+    layerRef: lg.group,
   });
 
-  // Animate chips as time passes (approximate per-beat durations)
-  let elapsed = 0;
-  t.beats.forEach((b, i) => {
-    const beatDuration = (b.params?.duration ?? 800) + (b.parallel ? 0 : 80);
-    setTimeout(() => {
-      chips.forEach((c, ci) => {
-        if (ci < i)  c.className = 'beat-chip done';
-        if (ci === i) c.className = 'beat-chip active';
-      });
-    }, elapsed);
-    if (!b.parallel) elapsed += beatDuration;
+  registerRecognizedSketch({
+    id: 'agent_right', label: rR.label, category: rR.category, confidence: 0.92,
+    bbox: { x: W*0.75 - rg.w/2, y: H*0.5 - rg.h/2, width: rg.w, height: rg.h },
+    layerRef: rg.group,
   });
+
+  console.log(`[SquiggleWiggle] Spawned "${lR.label}" (${lR.category}) ✦ "${rR.label}" (${rR.category})`);
+  setTimeout(() => startInteractionEngine(), 800);
 }
-
-// ── Replay / Draw Again ───────────────────────────────────────────────────────
-replayBtn.addEventListener('click', async () => {
-  stopInteractionEngine();
-  getRegistry().getAll().forEach(a => removeSketch(a.id));
-  agentRefs   = {};
-  beatTimeline.innerHTML = '';
-  clearAllCooldowns();
-
-  // Rebuild on same stage
-  await setupKonva();
-  await spawnBothSketches();
-  startInteractionEngine();
-});
-
-resetBtn.addEventListener('click', () => {
-  stopInteractionEngine();
-  getRegistry().getAll().forEach(a => removeSketch(a.id));
-  if (konvaStage) { konvaStage.destroy(); konvaStage = null; }
-  agentRefs = {};
-
-  // Reset player states
-  clearPlayer(1, ctx1);
-  clearPlayer(2, ctx2);
-
-  stagePhase.classList.add('hidden');
-  drawPhase.classList.remove('hidden');
-  beatTimeline.innerHTML = '';
-  updateStatus();
-});
-

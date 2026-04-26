@@ -17,3 +17,4 @@ quickdraw_data/
 *.log
 *_log.txt
 *.png
+.env

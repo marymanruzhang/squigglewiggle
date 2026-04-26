@@ -427,6 +427,191 @@ def skeletal_frames():
         print(f"Error in skeletal_frames: {e}")
         return jsonify({"error": str(e)}), 500
 
+import urllib.request
+
+def get_openai_key():
+    key = os.environ.get("OPENAI_API_KEY")
+    if key: return key
+    try:
+        with open(".env", "r") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("OPENAI_API_KEY="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        pass
+    return None
+
+@app.route("/api/classify-sketch", methods=["POST"])
+def classify_sketch():
+    """
+    Takes { image: base64, svgPaths: [...] }
+    Returns { category: "...", label: "...", description: "..." }
+    Uses OpenAI GPT-4o for classification.
+    """
+    data = request.get_json(silent=True) or {}
+    image_data = data.get("image")
+    
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+
+    if 'base64,' in image_data:
+        base64_img = image_data.split('base64,')[1]
+    else:
+        base64_img = image_data
+
+    openai_key = get_openai_key()
+    if not openai_key:
+        return jsonify({"error": "OpenAI key not configured on server"}), 500
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 200,
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are an expert doodle recognizer. The image shows a whiteboard zone with:\n1. A hand-drawn cloud shape (the original visual prompt)\n2. Additional strokes drawn BY THE USER on top of or around the cloud\n\nYour task: identify what the COMPLETE drawing represents — what has the user transformed the cloud into?\nRespond with ONLY valid JSON in this exact format:\n{\"category\": \"<broad category e.g. animal, plant, vehicle, food, building, object>\", \"label\": \"<specific name e.g. daisy, school bus, hot air balloon>\", \"description\": \"<one sentence describing the complete drawing's key visual features, useful for animation>\"}\nIf the canvas shows only the cloud with no user additions, return: {\"category\": \"cloud\", \"label\": \"cloud\", \"description\": \"An unmodified cloud shape.\"}"
+            },
+            {
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "What doodle is drawn on this whiteboard section?" },
+                    { "type": "image_url", "image_url": { "url": f"data:image/png;base64,{base64_img}", "detail": "low" } }
+                ]
+            }
+        ]
+    }
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openai_key}"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            content = result["choices"][0]["message"]["content"].strip()
+            # Strip markdown code fences if present
+            cleaned = content.replace("```json", "").replace("```", "").strip()
+            
+            # Robust JSON extraction
+            import re
+            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if json_match:
+                cleaned = json_match.group(0)
+            
+            return jsonify(json.loads(cleaned))
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()
+        print(f"HTTPError calling OpenAI: {e.code} {e.reason} - {err_body}")
+        return jsonify({"error": f"HTTP {e.code}: {err_body}"}), 500
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error calling OpenAI: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ── /api/detect-parts ──────────────────────────────────────────────────────────
+@app.route("/api/detect-parts", methods=["POST"])
+def detect_parts():
+    data = request.get_json(silent=True) or {}
+    image_data = data.get("image", "")
+    label = data.get("label", "unknown")
+
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        return jsonify({"error": "No API key configured"}), 500
+
+    PART_GUIDELINES = {
+        "butterfly": "body(float_vertical), wing_left(flap,freq:3.5,minScale:0.05), wing_right(flap,freq:3.5,minScale:0.05)",
+        "moth":      "body(float_vertical), wing_left(flap,freq:2.5), wing_right(flap,freq:2.5)",
+        "bird":      "body(float_vertical), wing_left(flap,freq:2), wing_right(flap,freq:2), tail(sway)",
+        "bee":       "body(float_vertical), wing_left(flap,freq:5), wing_right(flap,freq:5)",
+        "turtle":    "body(wiggle,amplitude:4), head(sway,amplitude:10), leg_front_left(walk_leg,phaseOffset:0), leg_front_right(walk_leg,phaseOffset:3.14), leg_back_left(walk_leg,phaseOffset:3.14), leg_back_right(walk_leg,phaseOffset:0)",
+        "tortoise":  "body(wiggle,amplitude:3), head(sway), leg_front_left(walk_leg,phaseOffset:0), leg_front_right(walk_leg,phaseOffset:3.14), leg_back_left(walk_leg,phaseOffset:3.14), leg_back_right(walk_leg,phaseOffset:0)",
+        "dog":       "body(float_vertical,amplitude:4), head(sway), tail(sway,amplitude:30,freq:2.5), leg_front_left(walk_leg,phaseOffset:0), leg_front_right(walk_leg,phaseOffset:3.14), leg_back_left(walk_leg,phaseOffset:3.14), leg_back_right(walk_leg,phaseOffset:0)",
+        "cat":       "body(float_vertical,amplitude:3), head(sway), tail(sway,amplitude:35,freq:1.5), leg_front_left(walk_leg,phaseOffset:0), leg_front_right(walk_leg,phaseOffset:3.14), leg_back_left(walk_leg,phaseOffset:3.14), leg_back_right(walk_leg,phaseOffset:0)",
+        "rabbit":    "body(float_vertical,amplitude:5), head(sway), ear_left(sway,amplitude:10), ear_right(sway,amplitude:10), leg_left(walk_leg), leg_right(walk_leg,phaseOffset:3.14)",
+        "fish":      "body(sway,amplitude:10,freq:1.2), tail(sway,amplitude:20,freq:2.4)",
+        "whale":     "body(sway,amplitude:8), tail(sway,amplitude:18,freq:1.5)",
+        "flower":    "petals(pulse,scaleAmplitude:0.06), stem(sway,amplitude:8), center(rotate,freq:0.15)",
+        "tree":      "canopy(sway,amplitude:7), trunk(static)",
+        "jellyfish": "body(pulse,scaleAmplitude:0.1), tentacles(wiggle,amplitude:20)",
+        "human":     "body(float_vertical,amplitude:3), head(sway,amplitude:6), arm_left(sway,amplitude:22,phaseOffset:0), arm_right(sway,amplitude:22,phaseOffset:3.14), leg_left(walk_leg,phaseOffset:0), leg_right(walk_leg,phaseOffset:3.14)",
+    }
+
+    guideline = PART_GUIDELINES.get(label.lower(), "body(wiggle,amplitude:12,freq:1.5)")
+
+    prompt = f"""Analyze this hand-drawn sketch of a {label}. Identify animatable body parts and return their pixel bounding boxes.
+
+Return ONLY valid JSON (no extra text):
+{{
+  "parts": [
+    {{
+      "id": "wing_left",
+      "bbox": {{"x": 10, "y": 30, "w": 80, "h": 60}},
+      "pivot": {{"x": 90, "y": 60}},
+      "animation": "flap",
+      "params": {{"freq": 3.5, "minScale": 0.05}}
+    }}
+  ]
+}}
+
+Animation types:
+- flap: wing folds via scaleX oscillation (1→minScale→1). pivot = where wing meets body.
+- sway: rotation ±amplitude degrees around pivot
+- walk_leg: leg swings forward/back; use phaseOffset:0 or 3.14 for left/right alternation
+- float_vertical: gentle up/down bob (amplitude in pixels)
+- pulse: scale breathe (scaleAmplitude fraction, e.g. 0.06)
+- rotate: continuous spin (freq = rotations/sec)
+- wiggle: quick rotation twitch
+- static: no movement
+
+Expected parts for {label}: {guideline}
+
+All coordinates are in pixels relative to the image. Keep bbox tight around each part."""
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 900,
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": image_data, "detail": "high"}}
+        ]}]
+    }
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"},
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            result = json.loads(response.read().decode())
+            content = result["choices"][0]["message"]["content"].strip()
+            cleaned = content.replace("```json", "").replace("```", "").strip()
+            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if json_match:
+                cleaned = json_match.group(0)
+            return jsonify(json.loads(cleaned))
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode()
+        return jsonify({"error": f"HTTP {e.code}: {err_body}"}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     print("\n  SquiggleWiggle — open http://localhost:5001 in your browser\n")

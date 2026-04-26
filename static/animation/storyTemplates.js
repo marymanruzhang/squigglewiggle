@@ -347,7 +347,7 @@ export const STORY_TEMPLATES = [
   {
     id: 'herbivore_plant_generic',
     priority: 7,
-    radius: 200,
+    radius: 400,   // wide enough to trigger across the full canvas split
     cooldown: 6000,
     match: (a, b) =>
       a.hasTag?.('herbivore') && (b.hasTag?.('plant') || b.hasTag?.('food')),
@@ -356,6 +356,45 @@ export const STORY_TEMPLATES = [
       { type: 'sniffTarget',    actor: 'source', params: { cycles: 2, duration: 700 } },
       { type: 'nibbleTarget',   actor: 'source', params: { bites: 3, duration: 900 } },
       { type: 'reactWiggle',    actor: 'target', params: { duration: 500, amplitude: 9 } },
+      { type: 'returnToIdle',   actor: 'source', params: { duration: 600 } },
+      { type: 'returnToIdle',   actor: 'target', params: { duration: 600 }, parallel: true },
+    ],
+  },
+
+  // ── Generic animal curious about any plant/object ─────────────────────────
+  {
+    id: 'animal_plant_curious',
+    priority: 5,
+    radius: 400,
+    cooldown: 5000,
+    match: (a, b) =>
+      a.hasTag?.('animal') && a.hasTag?.('mobile') &&
+      (b.hasTag?.('plant') || b.hasTag?.('rooted')),
+    beats: [
+      { type: 'noticeTarget',   actor: 'source', params: { duration: 400 } },
+      { type: 'approachTarget', actor: 'source', params: { margin: 60, duration: 1200 } },
+      { type: 'sniffTarget',    actor: 'source', params: { cycles: 1, duration: 600 } },
+      { type: 'reactWiggle',    actor: 'target', params: { duration: 400, amplitude: 7 } },
+      { type: 'returnToIdle',   actor: 'source', params: { duration: 700 } },
+      { type: 'returnToIdle',   actor: 'target', params: { duration: 700 }, parallel: true },
+    ],
+  },
+
+  // ── Generic animal meets any other mobile object ──────────────────────────
+  {
+    id: 'two_animals_meet',
+    priority: 4,
+    radius: 400,
+    cooldown: 7000,
+    match: (a, b) =>
+      a.hasTag?.('animal') && a.hasTag?.('mobile') &&
+      b.hasTag?.('animal') && b.hasTag?.('mobile'),
+    beats: [
+      { type: 'noticeTarget',   actor: 'source', params: { duration: 400 } },
+      { type: 'approachTarget', actor: 'source', params: { margin: 70, duration: 1100 } },
+      { type: 'noticeTarget',   actor: 'target', params: { duration: 400 } },
+      { type: 'happyBounce',    actor: 'source', params: { hops: 2, hopHeight: 14, duration: 600 } },
+      { type: 'happyBounce',    actor: 'target', params: { hops: 2, hopHeight: 14, duration: 600 }, parallel: true },
       { type: 'returnToIdle',   actor: 'source', params: { duration: 600 } },
       { type: 'returnToIdle',   actor: 'target', params: { duration: 600 }, parallel: true },
     ],
