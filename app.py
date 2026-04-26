@@ -2,9 +2,28 @@ from __future__ import annotations
 
 import os
 import io
+
+# Load .env so OPENAI_API_KEY is available (python-dotenv or manual fallback)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed — read .env manually
+    _env_path = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.exists(_env_path):
+        with open(_env_path) as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if _line and not _line.startswith('#') and '=' in _line:
+                    _k, _, _v = _line.partition('=')
+                    os.environ.setdefault(_k.strip(), _v.strip())
+
 import json
 import base64
 import uuid
+import re
+import traceback
+
 import tensorflow as tf
 from PIL import Image, ImageDraw
 from flask import Flask, request, jsonify, send_from_directory
