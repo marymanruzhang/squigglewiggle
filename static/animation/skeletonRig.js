@@ -1,19 +1,14 @@
 /**
- * skeletonRig.js  —  Linear Blend Skinning engine
+ * skeletonRig.js — GPT-4o joint detection + Linear Blend Skinning
  *
- * Usage:
- *   const rig = await buildSkeletalRig(croppedCanvas, label, category);
- *   if (rig) {
- *     startSkeletalAnimation(rig, konvaLayer);
- *     // rig.group is the Konva.Group to add to the stage
- *     // rig.stop() cancels the RAF
- *   }
+ * Key design:
+ * - sigma=90px: large influence radius so body pixels near joints blend
+ *   smoothly into limb motion — no hard seam at body/leg boundary
+ * - Inverse mapping: for each OUTPUT pixel, find where it came from in the
+ *   source — no holes, no gaps, seamless continuous deformation
  */
 
-// ─── Bone hierarchy definitions ───────────────────────────────────────────────
-// Each bone = [name, parentJoint, childJoint]
-// Rotation is applied at parentJoint around its position.
-
+// ─── Bone sets ────────────────────────────────────────────────────────────────
 const BONE_SETS = {
   quadruped: [
     ['spine',   'root',   'spine'],
@@ -27,103 +22,96 @@ const BONE_SETS = {
     ['foot_R',  'knee_R', 'ankle_R'],
   ],
   biped: [
-    ['spine',     'root',       'spine'],
-    ['neck',      'spine',      'neck'],
-    ['head',      'neck',       'head'],
-    ['upper_L',   'spine',      'shoulder_L'],
-    ['fore_L',    'shoulder_L', 'elbow_L'],
-    ['upper_R',   'spine',      'shoulder_R'],
-    ['fore_R',    'shoulder_R', 'elbow_R'],
-    ['thigh_L',   'root',       'hip_L'],
-    ['shin_L',    'hip_L',      'knee_L'],
-    ['calf_L',    'knee_L',     'ankle_L'],
-    ['thigh_R',   'root',       'hip_R'],
-    ['shin_R',    'hip_R',      'knee_R'],
-    ['calf_R',    'knee_R',     'ankle_R'],
-  ],
-  bird: [
     ['spine',   'root',       'spine'],
     ['neck',    'spine',      'neck'],
     ['head',    'neck',       'head'],
-    ['wing_L',  'spine',      'shoulder_L'],
-    ['tip_L',   'shoulder_L', 'elbow_L'],
-    ['wing_R',  'spine',      'shoulder_R'],
-    ['tip_R',   'shoulder_R', 'elbow_R'],
-    ['leg_L',   'root',       'hip_L'],
-    ['leg_R',   'root',       'hip_R'],
+    ['upper_L', 'spine',      'shoulder_L'],
+    ['fore_L',  'shoulder_L', 'elbow_L'],
+    ['upper_R', 'spine',      'shoulder_R'],
+    ['fore_R',  'shoulder_R', 'elbow_R'],
+    ['thigh_L', 'root',       'hip_L'],
+    ['shin_L',  'hip_L',      'knee_L'],
+    ['thigh_R', 'root',       'hip_R'],
+    ['shin_R',  'hip_R',      'knee_R'],
+  ],
+  bird: [
+    ['spine',  'root',       'spine'],
+    ['neck',   'spine',      'neck'],
+    ['head',   'neck',       'head'],
+    ['wing_L', 'spine',      'shoulder_L'],
+    ['tip_L',  'shoulder_L', 'elbow_L'],
+    ['wing_R', 'spine',      'shoulder_R'],
+    ['tip_R',  'shoulder_R', 'elbow_R'],
+    ['leg_L',  'root',       'hip_L'],
+    ['leg_R',  'root',       'hip_R'],
   ],
   fish: [
-    ['body',   'root',      'spine'],
-    ['tail1',  'spine',     'tail_base'],
-    ['tail2',  'tail_base', 'tail_tip'],
+    ['body',  'root',      'spine'],
+    ['tail1', 'spine',     'tail_base'],
+    ['tail2', 'tail_base', 'tail_tip'],
   ],
 };
 
-// ─── Walk-cycle bone rotations (degrees) by type ──────────────────────────────
+// ─── Walk-cycle rotations (degrees) ──────────────────────────────────────────
 function getRotations(type, phase) {
   const p = phase * Math.PI * 2;
   switch (type) {
     case 'quadruped': return {
-      spine:   Math.sin(p * 2)           *  3,
-      neck:    Math.sin(p * 2 + 0.4)    *  6,
-      head:    Math.sin(p * 0.8)         *  5,
-      femur_L: Math.sin(p)               * 28,
+      spine:   Math.sin(p * 2) * 3,
+      neck:    Math.sin(p * 2 + 0.4) * 6,
+      head:    Math.sin(p * 0.8) * 5,
+      femur_L: Math.sin(p) * 28,
       tibia_L: Math.max(0, Math.sin(p + 0.5)) * 22,
       foot_L:  Math.max(0, Math.sin(p + 0.9)) * 12,
-      femur_R: Math.sin(p + Math.PI)     * 28,
+      femur_R: Math.sin(p + Math.PI) * 28,
       tibia_R: Math.max(0, Math.sin(p + Math.PI + 0.5)) * 22,
       foot_R:  Math.max(0, Math.sin(p + Math.PI + 0.9)) * 12,
     };
     case 'biped': return {
-      spine:   Math.sin(p * 2)           *  3,
-      neck:    Math.sin(p)               *  4,
-      head:    Math.sin(p * 0.7)         *  5,
-      upper_L: Math.sin(p + Math.PI)     * 28,
+      spine:   Math.sin(p * 2) * 3,
+      neck:    Math.sin(p) * 4,
+      head:    Math.sin(p * 0.7) * 5,
+      upper_L: Math.sin(p + Math.PI) * 28,
       fore_L:  Math.max(0, Math.sin(p + Math.PI + 0.5)) * 22,
-      upper_R: Math.sin(p)               * 28,
+      upper_R: Math.sin(p) * 28,
       fore_R:  Math.max(0, Math.sin(p + 0.5)) * 22,
-      thigh_L: Math.sin(p)               * 32,
+      thigh_L: Math.sin(p) * 32,
       shin_L:  Math.max(0, Math.sin(p + 0.6)) * 28,
-      calf_L:  Math.max(0, Math.sin(p + 1.0)) * 15,
-      thigh_R: Math.sin(p + Math.PI)     * 32,
+      thigh_R: Math.sin(p + Math.PI) * 32,
       shin_R:  Math.max(0, Math.sin(p + Math.PI + 0.6)) * 28,
-      calf_R:  Math.max(0, Math.sin(p + Math.PI + 1.0)) * 15,
     };
     case 'bird': return {
       spine:  Math.sin(p * 2) * 3,
-      neck:   Math.sin(p)     * 5,
-      head:   Math.sin(p)     * 6,
-      wing_L: Math.sin(p * 3) * 35,
-      tip_L:  Math.sin(p * 3 + 0.4) * 20,
-      wing_R: Math.sin(p * 3) * 35,   // same phase — both wings flap together
-      tip_R:  Math.sin(p * 3 + 0.4) * 20,
-      leg_L:  Math.sin(p)     * 10,
+      neck:   Math.sin(p) * 5,
+      head:   Math.sin(p) * 6,
+      wing_L: Math.sin(p * 3) * 38,
+      tip_L:  Math.sin(p * 3 + 0.5) * 22,
+      wing_R: Math.sin(p * 3) * 38,
+      tip_R:  Math.sin(p * 3 + 0.5) * 22,
+      leg_L:  Math.sin(p) * 10,
       leg_R:  Math.sin(p + Math.PI) * 10,
     };
     case 'fish': return {
       body:  Math.sin(p * 1.8) * 12,
-      tail1: Math.sin(p * 1.8 + 0.5) * 20,
-      tail2: Math.sin(p * 1.8 + 1.0) * 25,
+      tail1: Math.sin(p * 1.8 + 0.5) * 22,
+      tail2: Math.sin(p * 1.8 + 1.0) * 28,
     };
     default: return {};
   }
 }
 
 // ─── Fetch joints from backend ─────────────────────────────────────────────────
-async function fetchJoints(croppedCanvas, label, category) {
+async function fetchJoints(canvas, label, category) {
   try {
-    const resp = await fetch('/api/detect-joints', {
+    const r = await fetch('/api/detect-joints', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        image: croppedCanvas.toDataURL('image/png'),
-        label, category,
-      }),
+      body: JSON.stringify({ image: canvas.toDataURL('image/png'), label, category }),
     });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const d = await resp.json();
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
     if (d.error) throw new Error(d.error);
-    return d; // { type, joints: { root:[fx,fy], ... } }
+    return d;
   } catch (e) {
     console.warn('[skeletonRig] fetchJoints failed:', e.message);
     return null;
@@ -134,105 +122,97 @@ async function fetchJoints(croppedCanvas, label, category) {
 export async function buildSkeletalRig(croppedCanvas, label, category, cx, cy, agentId, konvaLayer) {
   const W = croppedCanvas.width, H = croppedCanvas.height;
 
-  // 1. Get joints from GPT-4o
   const jointData = await fetchJoints(croppedCanvas, label, category);
-  if (!jointData || !jointData.joints) return null;
+  if (!jointData?.joints) return null;
 
-  const type   = jointData.type;
-  const bones  = BONE_SETS[type];
+  const type  = jointData.type;
+  const bones = BONE_SETS[type];
   if (!bones) return null;
 
-  // 2. Convert normalized [0-1] coords → pixel coords
+  // Convert normalized [0-1] → pixel coords
   const joints = {};
-  for (const [name, [fx, fy]] of Object.entries(jointData.joints)) {
-    joints[name] = { x: fx * W, y: fy * H };
+  const fallback = { x: W / 2, y: H / 2 };
+  for (const [name, coords] of Object.entries(jointData.joints)) {
+    if (Array.isArray(coords) && coords.length === 2) {
+      joints[name] = { x: coords[0] * W, y: coords[1] * H };
+    }
   }
-
-  // Fill any missing joints with body center
-  const center = joints.root || { x: W/2, y: H/2 };
+  // Fill any missing joints
   for (const [, pj, cj] of bones) {
-    if (!joints[pj]) joints[pj] = { ...center };
-    if (!joints[cj]) joints[cj] = { ...center };
+    if (!joints[pj]) joints[pj] = { ...fallback };
+    if (!joints[cj]) joints[cj] = { ...fallback };
   }
 
-  // 3. Read source pixels
+  // Read source pixels
   const srcCtx = croppedCanvas.getContext('2d');
   const srcImg  = srcCtx.getImageData(0, 0, W, H);
 
-  // 4. Pre-compute skinning weights (per non-transparent pixel)
+  // Pre-compute skinning weights for every source pixel
   const skinData = buildSkinWeights(srcImg, joints, bones, W, H);
-  console.log(`[skeletonRig] "${label}" (${type}): ${skinData.length} skin pixels, ${bones.length} bones`);
+  console.log(`[skeletonRig] "${label}" type=${type} joints=${Object.keys(joints).length} skin_pixels=${skinData.length}`);
 
-  // 5. Create output canvas + Konva.Image
+  // Output canvas + Konva.Image
   const outCanvas = document.createElement('canvas');
   outCanvas.width = W; outCanvas.height = H;
   const outCtx = outCanvas.getContext('2d');
 
-  const kImg = new Konva.Image({
-    image: outCanvas, x: -W/2, y: -H/2, width: W, height: H,
-  });
+  const kImg = new Konva.Image({ image: outCanvas, x: -W/2, y: -H/2, width: W, height: H });
   const group = new Konva.Group({ x: cx, y: cy, id: agentId });
   group.add(kImg);
   konvaLayer.add(group);
 
-  // 6. Start animation RAF
+  // RAF loop
+  const FREQ = { bird:2.0, fish:1.8, biped:1.4 }[type] ?? 1.6;
   let phase = 0, lastTs = null, raf;
-  const FREQ = type === 'bird' ? 2.0 : type === 'fish' ? 1.8 : type === 'biped' ? 1.4 : 1.6;
 
   const tick = ts => {
     if (!lastTs) lastTs = ts;
     phase += Math.min((ts - lastTs) / 1000, 0.05) * FREQ;
     lastTs = ts;
-
-    const rotations = getRotations(type, phase);
-    renderFrame(srcImg, skinData, bones, joints, rotations, outCtx, W, H);
+    renderFrame(srcImg, skinData, bones, joints, getRotations(type, phase), outCtx, W, H);
     kImg.image(outCanvas);
     konvaLayer.batchDraw();
     raf = requestAnimationFrame(tick);
   };
   raf = requestAnimationFrame(tick);
 
-  return {
-    group,
-    w: W, h: H,
-    stop: () => cancelAnimationFrame(raf),
-  };
+  return { group, w: W, h: H, stop: () => cancelAnimationFrame(raf) };
 }
 
 // ─── Pre-compute skinning weights ─────────────────────────────────────────────
-const SIGMA = 40; // spatial influence falloff (px)
+// SIGMA=90: large radius ensures body pixels near joints smoothly follow limbs
+const SIGMA = 90;
 
 function buildSkinWeights(imgData, joints, bones, W, H) {
-  const px = imgData.data;
+  const px  = imgData.data;
   const result = [];
 
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
+      // Include ALL pixels (not just ink) so the whole character deforms
       const i = (y * W + x) * 4;
-      if (px[i + 3] < 20) continue;
+      if (px[i + 3] < 10) continue;
 
-      // Compute distance to each bone segment
-      const dists = bones.map(([name, pj, cj], bi) => {
-        const p0 = joints[pj] || { x: W/2, y: H/2 };
-        const p1 = joints[cj] || { x: W/2, y: H/2 };
-        return { bi, dist: distToSeg(x, y, p0, p1) };
-      });
+      const dists = bones.map(([, pj, cj], bi) => ({
+        bi,
+        dist: distToSeg(x, y, joints[pj] ?? fallbackPt, joints[cj] ?? fallbackPt),
+      }));
       dists.sort((a, b) => a.dist - b.dist);
 
-      const d0 = dists[0], d1 = dists[1] || dists[0];
-      const w0r = Math.exp(-d0.dist * d0.dist / (2 * SIGMA * SIGMA));
-      const w1r = Math.exp(-d1.dist * d1.dist / (2 * SIGMA * SIGMA));
-      const wSum = (w0r + w1r) || 1;
+      // Top 3 bones for smoother blending
+      const top = dists.slice(0, 3);
+      const ws  = top.map(d => Math.exp(-d.dist * d.dist / (2 * SIGMA * SIGMA)));
+      const wSum = ws.reduce((a, b) => a + b, 0) || 1;
 
       result.push({
         x, y, i,
-        b0: d0.bi, w0: w0r / wSum,
-        b1: d1.bi, w1: w1r / wSum,
+        bones: top.map((d, k) => ({ bi: d.bi, w: ws[k] / wSum })),
       });
     }
   }
   return result;
 }
+const fallbackPt = { x: 0, y: 0 };
 
 function distToSeg(px, py, p0, p1) {
   const dx = p1.x - p0.x, dy = p1.y - p0.y;
@@ -242,49 +222,73 @@ function distToSeg(px, py, p0, p1) {
   return Math.hypot(px - (p0.x + t*dx), py - (p0.y + t*dy));
 }
 
-// ─── Per-frame render with LBS ────────────────────────────────────────────────
+// ─── Inverse-mapping render ───────────────────────────────────────────────────
+// For each output pixel we find where it came from in source — no holes.
+// Algorithm:
+//   1. Forward pass: build a sparse map from output→source coords
+//   2. Gap fill: pixels not hit get the nearest known mapping via dilation
+//   3. Sample source image at the found source coords
 function renderFrame(srcImg, skinData, bones, joints, rotations, outCtx, W, H) {
-  const outData = outCtx.createImageData(W, H);
-  const out = outData.data;
   const src = srcImg.data;
 
-  // Build transform for each bone (rotation around its parent joint)
+  // Build per-bone 2D rotation transforms (rotate around parent joint)
   const T = bones.map(([name, pj]) => {
-    const deg = rotations[name] || 0;
-    const rad = deg * Math.PI / 180;
-    const J   = joints[pj] || { x: W/2, y: H/2 };
+    const rad = (rotations[name] || 0) * Math.PI / 180;
+    const J   = joints[pj] || fallbackPt;
     return { Jx: J.x, Jy: J.y, cos: Math.cos(rad), sin: Math.sin(rad) };
   });
 
-  for (const { x, y, i, b0, w0, b1, w1 } of skinData) {
-    const T0 = T[b0], T1 = T[b1];
+  // --- Pass 1: forward map source → output, build srcX/srcY lookup ---
+  // Use Float32Array: [srcX, srcY] per output pixel; -1 = unmapped
+  const mapX = new Float32Array(W * H).fill(-1);
+  const mapY = new Float32Array(W * H).fill(-1);
 
-    // Rotate x,y around joint J0
-    const dx0 = x - T0.Jx, dy0 = y - T0.Jy;
-    const rx0  = T0.Jx + T0.cos*dx0 - T0.sin*dy0;
-    const ry0  = T0.Jy + T0.sin*dx0 + T0.cos*dy0;
+  for (const { x, y, bones: boneWeights } of skinData) {
+    let nx = 0, ny = 0;
+    for (const { bi, w } of boneWeights) {
+      const t = T[bi];
+      const dx = x - t.Jx, dy = y - t.Jy;
+      nx += w * (t.Jx + t.cos*dx - t.sin*dy);
+      ny += w * (t.Jy + t.sin*dx + t.cos*dy);
+    }
+    const ox = Math.round(nx), oy = Math.round(ny);
+    if (ox >= 0 && ox < W && oy >= 0 && oy < H) {
+      const oi = oy * W + ox;
+      mapX[oi] = x; mapY[oi] = y;
+    }
+  }
 
-    // Rotate x,y around joint J1
-    const dx1 = x - T1.Jx, dy1 = y - T1.Jy;
-    const rx1  = T1.Jx + T1.cos*dx1 - T1.sin*dy1;
-    const ry1  = T1.Jy + T1.sin*dx1 + T1.cos*dy1;
-
-    // Blend
-    const nx = Math.round(w0*rx0 + w1*rx1);
-    const ny = Math.round(w0*ry0 + w1*ry1);
-
-    // Splat 2×2 to avoid holes from forward mapping
-    for (let dy = 0; dy <= 1; dy++) {
-      for (let dx = 0; dx <= 1; dx++) {
-        const ox = nx + dx, oy = ny + dy;
-        if (ox < 0 || ox >= W || oy < 0 || oy >= H) continue;
-        const oi = (oy * W + ox) * 4;
-        out[oi]   = src[i];
-        out[oi+1] = src[i+1];
-        out[oi+2] = src[i+2];
-        out[oi+3] = src[i+3];
+  // --- Pass 2: gap fill by 3×3 dilation (2 passes for larger gaps) ---
+  for (let pass = 0; pass < 2; pass++) {
+    const prevX = new Float32Array(mapX), prevY = new Float32Array(mapY);
+    for (let oy = 1; oy < H - 1; oy++) {
+      for (let ox = 1; ox < W - 1; ox++) {
+        if (mapX[oy * W + ox] >= 0) continue;
+        // Find nearest mapped neighbor
+        for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,1],[-1,1],[1,-1]]) {
+          const ni = (oy+dy) * W + (ox+dx);
+          if (prevX[ni] >= 0) { mapX[oy*W+ox] = prevX[ni]; mapY[oy*W+ox] = prevY[ni]; break; }
+        }
       }
     }
   }
+
+  // --- Pass 3: sample source and write output ---
+  const outData = outCtx.createImageData(W, H);
+  const out = outData.data;
+
+  for (let oi = 0; oi < W * H; oi++) {
+    const sx = mapX[oi], sy = mapY[oi];
+    if (sx < 0) continue;
+    const six = Math.round(sx), siy = Math.round(sy);
+    if (six < 0 || six >= W || siy < 0 || siy >= H) continue;
+    const si = (siy * W + six) * 4;
+    const di = oi * 4;
+    out[di]   = src[si];
+    out[di+1] = src[si+1];
+    out[di+2] = src[si+2];
+    out[di+3] = src[si+3];
+  }
+
   outCtx.putImageData(outData, 0, 0);
 }
