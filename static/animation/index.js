@@ -58,7 +58,7 @@ const engine     = new InteractionEngine(registry, controller, INTERACTION_RULES
  * @returns {SceneAgent}
  */
 export function registerRecognizedSketch(recognitionResult) {
-  const { id, label, category, confidence, bbox, layerRef, frames } = recognitionResult;
+  const { id, label, category, confidence, bbox, layerRef, frames, spawnScale } = recognitionResult;
  
    // Resolve semantic profile (handles unknown labels gracefully)
    const profile = resolveProfile({ label, category, confidence });
@@ -74,6 +74,7 @@ export function registerRecognizedSketch(recognitionResult) {
      layerRef,
      confidence,
      frames,
+     spawnScale,   // AI-determined display scale; engine must preserve this
    });
 
   registry.register(agent);
@@ -81,7 +82,8 @@ export function registerRecognizedSketch(recognitionResult) {
 
   console.log(
     `[SketchEngine] registered "${label}" → category:${profile.category}` +
-    ` motion:${profile.defaultMotion} tags:[${profile.tags.join(', ')}]`
+    ` motion:${profile.defaultMotion} scale:${spawnScale?.toFixed(3) ?? 'default'}` +
+    ` tags:[${profile.tags.join(', ')}]`
   );
 
   return agent;

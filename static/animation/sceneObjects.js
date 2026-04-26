@@ -186,7 +186,7 @@ export class SceneAgent {
    *   frames:       string[]
    * }} opts
    */
-  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames }) {
+  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames, spawnScale }) {
     this.id            = id;
     this.label         = label;
     this.category      = category;
@@ -195,7 +195,7 @@ export class SceneAgent {
     this.motionParams  = motionParams  || {};
     this.bbox          = { ...bbox };
     this.confidence    = confidence    || 1.0;
-    this.frames        = frames        || []; // List of frame data URLs (optional)
+    this.frames        = frames        || [];
 
     // Pre-cache frame images for performance
     this.frameImages   = [];
@@ -215,15 +215,15 @@ export class SceneAgent {
     this.originPos = { x: pos.x, y: pos.y };
     // spawnPos is immutable — always the original spawn point, never mutated by wander/story
     this.spawnPos  = { x: pos.x, y: pos.y };
+    // spawnScale: the AI-determined display scale; must be preserved across all engine resets
+    this.spawnScale = spawnScale ?? this.adapter._scaleX ?? 1;
 
     // Runtime state
-    // States: 'idle' | 'story_active' | 'returning' | 'paused'
     this.state           = 'idle';
-    this.cancelIdle      = null;    // cancel function for the current idle animation
-    this.cooldowns       = {};      // { pairKey: timestampMs }
-    this.activeStoryId   = null;    // id of the story this agent is currently in
-    this.lastInteractionTime = 0;   // timestamp of last completed story
-    // homePosition is set on first idle arrival; used by stories that move agents far
+    this.cancelIdle      = null;
+    this.cooldowns       = {};
+    this.activeStoryId   = null;
+    this.lastInteractionTime = 0;
     this.homePosition    = null;
   }
 

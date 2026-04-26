@@ -119,12 +119,14 @@ export class AnimationController {
     const home = agent.spawnPos || agent.originPos;
     await this.moveTo(agent, home.x, home.y, durationMs);
     agent.adapter.setRotation(0);
-    agent.adapter.setScale(1);
+    // Restore AI-determined spawn scale, NOT hardcoded 1
+    const base = agent.spawnScale ?? 1;
+    agent.adapter.setScale(base);
     agent.adapter.setOpacity(1);
-    // Reset any image-child transforms (wing flap, leg squash, direction flip)
+    // Reset any child image transforms (wing flap, leg squash, direction flip)
+    // but preserve the group's base scale
     const img = agent.adapter.ref?.findOne?.('Image');
     if (img) { img.scaleX(1); img.scaleY(1); }
-    // Reset originPos to spawnPos so the animal starts next idle from home
     agent.originPos = { ...home };
   }
 

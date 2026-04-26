@@ -733,7 +733,11 @@ async function transitionToAnimationStage() {
       result.group.scaleY(s);
       result.w = result.naturalW * s;
       result.h = result.naturalH * s;
+      result.group._baseScale = s; // remember so engine never resets it
       console.log(`[compare-sizes] "${label}" s=${s.toFixed(3)} → ${result.h.toFixed(0)}px tall`);
+    } else {
+      // Preserve whatever semantic scale was applied by buildPartGroup
+      result.group._baseScale = result.group.scaleX();
     }
     return result;
   }
@@ -754,12 +758,14 @@ async function transitionToAnimationStage() {
     id: 'agent_left',  label: lR.label,  category: lR.category,  confidence: 0.92,
     bbox: { x: W*0.25 - lg.w/2, y: H*0.5 - lg.h/2, width: lg.w, height: lg.h },
     layerRef: lg.group,
+    spawnScale: lg.group._baseScale ?? lg.group.scaleX(),
   });
 
   registerRecognizedSketch({
     id: 'agent_right', label: rR.label, category: rR.category, confidence: 0.92,
     bbox: { x: W*0.75 - rg.w/2, y: H*0.5 - rg.h/2, width: rg.w, height: rg.h },
     layerRef: rg.group,
+    spawnScale: rg.group._baseScale ?? rg.group.scaleX(),
   });
 
   console.log(`[SquiggleWiggle] Spawned "${lR.label}" (${lR.category}) ✦ "${rR.label}" (${rR.category})`);

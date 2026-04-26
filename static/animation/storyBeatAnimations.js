@@ -272,10 +272,11 @@ export async function growOrBloom(actor, _target, ctrl, params = {}) {
   await ctrl.playOnce(actor, 'sway_bloom', {
     amplitude, bloomAmplitude, bloomSpeed: 0.9, duration,
   }, duration);
-  // Linger slightly larger before settling
-  actor.adapter.setScale(1.04);
+  // Linger slightly larger before settling back to spawn scale
+  const base = actor.spawnScale ?? 1;
+  actor.adapter.setScale(base * 1.04);
   await wait(300);
-  actor.adapter.setScale(1);
+  actor.adapter.setScale(base);
 }
 
 /**

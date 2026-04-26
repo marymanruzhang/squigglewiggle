@@ -527,9 +527,11 @@ export function tilt(agent, params = {}) {
 // ─── Abstract / fallback motions ─────────────────────────────────────────────
 
 export function static_motion(agent, params = {}) {
-  // True no-op — tiny imperceptible breathe so it's not completely dead
+  // Imperceptible slow breathe — scale relative to spawnScale so AI sizing is never lost
+  const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   return oneshotOrLoop(agent, params, t => {
-    agent.adapter.setScale(1 + 0.005 * Math.sin(2 * Math.PI * t * 0.15));
+    const s = base * (1 + 0.004 * Math.sin(2 * Math.PI * t * 0.12));
+    agent.adapter.setScaleXY(s, s);
   });
 }
 
