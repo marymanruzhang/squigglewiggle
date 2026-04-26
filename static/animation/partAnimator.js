@@ -98,16 +98,14 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
 
     if (isFlying) {
       buildWings(src, W, H, group, konvaLayer, rafIds, lbl);
-    } else if (isHuman) {
-      buildBiped(src, W, H, group, konvaLayer, rafIds);
-    } else if (isGround) {
-      buildQuadruped(src, W, H, group, konvaLayer, rafIds);
     } else if (isPlant) {
       buildPlant(src, W, H, group, konvaLayer, rafIds);
     } else if (isSwim) {
       buildSwimmer(src, W, H, group, konvaLayer, rafIds);
     } else {
-      buildGeneric(src, W, H, group, konvaLayer, rafIds);
+      // Ground animals, bipeds, and anything else: whole-body bounce
+      // (never split — splitting always creates visible seams)
+      buildWholeBodyBounce(src, W, H, group, konvaLayer, rafIds, isHuman);
     }
 
     if (group.children.length === 0) { resolve(null); return; }
@@ -147,75 +145,21 @@ function buildWings(src, W, H, group, layer, rafIds, lbl) {
   });
 }
 
-// ─── Quadruped: body + alternating left/right leg pairs ──────────────────────
-function buildQuadruped(src, W, H, group, layer, rafIds) {
-  const legTop = Math.floor(H * 0.62);   // where legs start
-  const legH   = H - legTop;
-  const halfW  = Math.floor(W / 2);
+// ─── Whole-body bounce fallback (no splitting, no seams) ─────────────────────
+// Used when LBS skeleton fails. Animates the intact full sketch with a
+// walk-cycle bounce so it at least looks alive without any visible cuts.
+function buildWholeBodyBounce(src, W, H, group, layer, rafIds, isBiped) {
+  const kImg = makeKImg(clipCanvas(src, 0, 0, W, H),
+    { x: W/2, y: H/2, offX: W/2, offY: H/2 });
+  group.add(kImg);
 
-  // Body (top portion)
-  const kBody = makeKImg(clipCanvas(src, 0, 0, W, legTop),
-    { x: W/2, y: legTop/2, offX: W/2, offY: legTop/2 });
-  group.add(kBody);
-
-  // Front-left + Back-left (left half, bottom)
-  const kLegL = makeKImg(clipCanvas(src, 0, legTop, halfW, legH),
-    { x: halfW/2, y: legTop, offX: halfW/2, offY: 0 });   // pivot = top of leg strip
-  group.add(kLegL);
-
-  // Front-right + Back-right (right half, bottom)
-  const kLegR = makeKImg(clipCanvas(src, halfW, legTop, W-halfW, legH),
-    { x: halfW + (W-halfW)/2, y: legTop, offX: (W-halfW)/2, offY: 0 });
-  group.add(kLegR);
-
-  const WALK_FREQ = 1.6, SWING = 22;
-  animRAF(rafIds, (phase) => {
-    const t = phase * WALK_FREQ * Math.PI * 2;
-    kLegL.rotation( Math.sin(t)           * SWING);
-    kLegR.rotation( Math.sin(t + Math.PI) * SWING);
-    kBody.y(legTop/2 - Math.abs(Math.sin(t)) * 3);   // body lifts on each step
-    layer.batchDraw();
-  });
-}
-
-// ─── Biped (human): body + swinging arms + walking legs ──────────────────────
-function buildBiped(src, W, H, group, layer, rafIds) {
-  const armBottom = Math.floor(H * 0.55);
-  const legTop    = Math.floor(H * 0.55);
-  const halfW     = Math.floor(W / 2);
-
-  // Torso / head (top half)
-  const kBody = makeKImg(clipCanvas(src, 0, 0, W, armBottom),
-    { x: W/2, y: armBottom/2, offX: W/2, offY: armBottom/2 });
-  group.add(kBody);
-
-  // Left arm (left 30% of torso)
-  const armW = Math.floor(W * 0.3);
-  const kArmL = makeKImg(clipCanvas(src, 0, Math.floor(H*0.2), armW, Math.floor(H*0.35)),
-    { x: armW/2, y: Math.floor(H*0.2), offX: armW/2, offY: 0 });
-  group.add(kArmL);
-
-  const kArmR = makeKImg(clipCanvas(src, W-armW, Math.floor(H*0.2), armW, Math.floor(H*0.35)),
-    { x: W - armW/2, y: Math.floor(H*0.2), offX: armW/2, offY: 0 });
-  group.add(kArmR);
-
-  // Legs (bottom 45%)
-  const legH = H - legTop;
-  const kLegL = makeKImg(clipCanvas(src, 0, legTop, halfW, legH),
-    { x: halfW/2, y: legTop, offX: halfW/2, offY: 0 });
-  group.add(kLegL);
-  const kLegR = makeKImg(clipCanvas(src, halfW, legTop, W-halfW, legH),
-    { x: halfW+(W-halfW)/2, y: legTop, offX: (W-halfW)/2, offY: 0 });
-  group.add(kLegR);
-
-  const FREQ = 1.4, LEG_SWING = 28, ARM_SWING = 22;
+  const FREQ = isBiped ? 1.4 : 1.6;
   animRAF(rafIds, (phase) => {
     const t = phase * FREQ * Math.PI * 2;
-    kLegL.rotation( Math.sin(t)           * LEG_SWING);
-    kLegR.rotation( Math.sin(t + Math.PI) * LEG_SWING);
-    kArmL.rotation( Math.sin(t + Math.PI) * ARM_SWING);  // arms opposite to legs
-    kArmR.rotation( Math.sin(t)           * ARM_SWING);
-    kBody.y(armBottom/2 - Math.abs(Math.sin(t*2)) * 2);
+    // Vertical bounce (2 bounces per walk cycle = 2 steps)
+    kImg.y(H/2 - Math.abs(Math.sin(t * 2)) * 5);
+    // Slight lean into direction of travel
+    kImg.rotation(Math.sin(t) * 2.5);
     layer.batchDraw();
   });
 }
