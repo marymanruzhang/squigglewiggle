@@ -692,28 +692,51 @@ async function transitionToAnimationStage() {
   const leftDataURL  = leftSnap.toDataURL('image/png');
   const rightDataURL = rightSnap.toDataURL('image/png');
 
-  const [leftParts, rightParts] = await Promise.all([
+  const [leftParts, rightParts, sizeComp] = await Promise.all([
     detectParts(leftDataURL,  lR.label),
     detectParts(rightDataURL, rR.label),
+    fetch('/api/compare-sizes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ label_left: lR.label, label_right: rR.label }),
+    }).then(r => r.json()).catch(() => null),
   ]);
 
-  console.log(`[partAnimator] Left parts:`,  leftParts);
-  console.log(`[partAnimator] Right parts:`, rightParts);
+  // Derive per-sketch override scales from GPT-4o comparison.
+  // BASE_SIZE = target display size (px) for the "1.0" object.
+  // Falls back to undefined → buildPartGroup uses SEMANTIC_SCALE table.
+  const BASE_SIZE = 260;
+  let leftOverride, rightOverride;
+  if (sizeComp && !sizeComp.error && sizeComp.left_scale !== undefined) {
+    console.log(`[compare-sizes] "${lR.label}"=${sizeComp.left_scale.toFixed(2)} ` +
+                `vs "${rR.label}"=${sizeComp.right_scale.toFixed(2)} — ${sizeComp.reasoning}`);
+    leftOverride  = { aiScale: sizeComp.left_scale,  base: BASE_SIZE };
+    rightOverride = { aiScale: sizeComp.right_scale, base: BASE_SIZE };
+  }
 
-  // ── Step 4b: Build Konva groups (part-based if detection succeeded) ──────────
-  // Centers: left at W*0.25, right at W*0.75, both vertically centered
-  async function spawnSketch(snap, parts, label, category, cx, cy, agentId) {
-    // Always attempt part-based animation (it handles its own category logic)
+  // ── Step 4b: Build Konva groups ───────────────────────────────────────────────
+  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, override) {
     const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label);
-    if (result) return result;
-    console.warn(`[partAnimator] buildPartGroup failed for "${label}", falling back`);
-    // Fallback: single stripped image
-    return makeGroup(snap.toDataURL('image/png'), cx, cy, agentId);
+    if (!result) {
+      console.warn(`[partAnimator] buildPartGroup failed for "${label}", falling back`);
+      return makeGroup(snap.toDataURL('image/png'), cx, cy, agentId);
+    }
+    // If GPT-4o gave us a size comparison, override the interim semantic scale.
+    if (override && result.naturalW) {
+      const nat = Math.max(result.naturalW, result.naturalH);
+      const s   = (override.base * override.aiScale) / nat;
+      result.group.scaleX(s);
+      result.group.scaleY(s);
+      result.w = result.naturalW * s;
+      result.h = result.naturalH * s;
+      console.log(`[compare-sizes] "${label}" scale=${s.toFixed(3)} (${nat}px→${(nat*s).toFixed(0)}px)`);
+    }
+    return result;
   }
 
   const [lg, rg] = await Promise.all([
-    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W * 0.25, H * 0.5, 'agent_left'),
-    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W * 0.75, H * 0.5, 'agent_right'),
+    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W*0.25, H*0.5, 'agent_left',  leftOverride),
+    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W*0.75, H*0.5, 'agent_right', rightOverride),
   ]);
 
   if (!lg || !rg) {

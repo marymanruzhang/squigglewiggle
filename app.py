@@ -729,6 +729,79 @@ Rules:
         return jsonify({"error": str(e)}), 500
 
 
+# ── /api/compare-sizes ────────────────────────────────────────────────────────
+# Given two sketch labels, asks GPT-4o for real-world relative sizes.
+# Returns { left_scale, right_scale } both in [0.05, 1.0] where the
+# larger real-world object gets 1.0 and the smaller gets a fraction.
+@app.route("/api/compare-sizes", methods=["POST"])
+def compare_sizes():
+    data        = request.get_json(silent=True) or {}
+    label_left  = data.get("label_left",  "unknown")
+    label_right = data.get("label_right", "unknown")
+
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        return jsonify({"error": "No API key"}), 500
+
+    prompt = f"""Two people each drew a sketch. Person A drew a "{label_left}" and Person B drew a "{label_right}".
+
+In real life, how large is each object compared to the other?
+
+Return ONLY valid JSON (no extra text):
+{{
+  "left_scale": 0.8,
+  "right_scale": 1.0,
+  "reasoning": "brief explanation"
+}}
+
+Rules:
+- The LARGER real-world object gets scale 1.0
+- The SMALLER gets a fraction between 0.05 and 1.0  
+- Use real-world intuition (a mountain is enormous vs a sheep; a butterfly is tiny vs a dog)
+- Minimum scale is 0.05 so nothing disappears completely
+- If sizes are similar in real life, both values should be close to 1.0
+
+Examples of correct reasoning:
+  dog vs mountain    → dog=0.10, mountain=1.0
+  butterfly vs flower→ butterfly=0.40, flower=1.0
+  person vs elephant → person=0.45, elephant=1.0
+  cat vs dog         → cat=0.85,  dog=1.0
+  tree vs house      → tree=0.90, house=1.0
+  sun vs cloud       → sun=1.0,   cloud=0.55
+  sheep vs mountain  → sheep=0.12, mountain=1.0"""
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 200,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {openai_key}"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            result  = json.loads(response.read().decode())
+            content = result["choices"][0]["message"]["content"].strip()
+            cleaned = content.replace("```json", "").replace("```", "").strip()
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if m: cleaned = m.group(0)
+            parsed = json.loads(cleaned)
+            ls = max(0.05, min(1.0, float(parsed.get("left_scale",  1.0))))
+            rs = max(0.05, min(1.0, float(parsed.get("right_scale", 1.0))))
+            reasoning = parsed.get("reasoning", "")
+            print(f"[compare-sizes] {label_left}={ls:.2f} vs {label_right}={rs:.2f} — {reasoning}")
+            return jsonify({"left_scale": ls, "right_scale": rs, "reasoning": reasoning})
+    except urllib.error.HTTPError as e:
+        return jsonify({"error": f"HTTP {e.code}: {e.read().decode()}"}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     print("\n  SquiggleWiggle — open http://localhost:5001 in your browser\n")
     app.run(host="0.0.0.0", port=5001, debug=True)

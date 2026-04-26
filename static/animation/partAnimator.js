@@ -57,7 +57,9 @@ export async function detectParts(imageDataURL, label) {
 }
 
 // ─── Main builder ─────────────────────────────────────────────────────────────
-export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer, category, label) {
+// overrideScale: if provided, uses this instead of SEMANTIC_SCALE lookup.
+// Returns { group, w, h, naturalW, naturalH, stop }
+export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer, category, label, overrideScale) {
   return new Promise(async resolve => {
     const filled = applyFillAndStrip(sourceCanvas, label);
     if (!filled) { resolve(null); return; }
@@ -78,21 +80,21 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
       try {
         const rigResult = await buildSkeletalRig(src, lbl, cat, cx, cy, agentId, konvaLayer);
         if (rigResult) {
-          // Apply semantic scale to the group
-          const scale = getSemanticScale(lbl);
+          const scale = overrideScale !== undefined ? overrideScale : getSemanticScale(lbl);
           rigResult.group.scaleX(scale);
           rigResult.group.scaleY(scale);
           rigResult.group._stopPartAnimations = rigResult.stop;
           konvaLayer.draw();
-          resolve({ group: rigResult.group, w: W * scale, h: H * scale, stop: rigResult.stop });
+          resolve({ group: rigResult.group, w: W * scale, h: H * scale,
+                    naturalW: W, naturalH: H, stop: rigResult.stop });
           return;
         }
       } catch (e) {
-        console.warn('[partAnimator] Skeletal rig failed, falling back to geometric:', e.message);
+        console.warn('[partAnimator] Skeletal rig failed, falling back:', e.message);
       }
     }
 
-    // ── Fallback: geometric canvas split ──────────────────────────────────────
+    // ── Fallback: geometric / bounce ──────────────────────────────────────────
     const group  = new Konva.Group({ x: cx, y: cy, id: agentId });
     const rafIds = [];
 
@@ -103,8 +105,6 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
     } else if (isSwim) {
       buildSwimmer(src, W, H, group, konvaLayer, rafIds);
     } else {
-      // Ground animals, bipeds, and anything else: whole-body bounce
-      // (never split — splitting always creates visible seams)
       buildWholeBodyBounce(src, W, H, group, konvaLayer, rafIds, isHuman);
     }
 
@@ -113,7 +113,7 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
     group.offsetX(W / 2);
     group.offsetY(H / 2);
 
-    const scale = getSemanticScale(lbl);
+    const scale = overrideScale !== undefined ? overrideScale : getSemanticScale(lbl);
     group.scaleX(scale);
     group.scaleY(scale);
 
@@ -121,7 +121,8 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
     konvaLayer.draw();
 
     group._stopPartAnimations = () => { rafIds.forEach(cancelAnimationFrame); rafIds.length = 0; };
-    resolve({ group, w: W * scale, h: H * scale, stop: group._stopPartAnimations });
+    resolve({ group, w: W * scale, h: H * scale, naturalW: W, naturalH: H,
+              stop: group._stopPartAnimations });
   });
 }
 
