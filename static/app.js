@@ -10,6 +10,7 @@ import {
 
 import { STORY_TEMPLATES } from '/static/animation/storyTemplates.js';
 import { detectParts, buildPartGroup, getSemanticScale } from '/static/animation/partAnimator.js';
+import { resolveProfile } from '/static/animation/semanticProfiles.js';
 
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -692,7 +693,7 @@ async function transitionToAnimationStage() {
   const leftDataURL  = leftSnap.toDataURL('image/png');
   const rightDataURL = rightSnap.toDataURL('image/png');
 
-  const [leftParts, rightParts, sizeComp] = await Promise.all([
+  const [leftParts, rightParts, sizeComp, sceneDesc] = await Promise.all([
     detectParts(leftDataURL,  lR.label),
     detectParts(rightDataURL, rR.label),
     fetch('/api/compare-sizes', {
@@ -700,7 +701,21 @@ async function transitionToAnimationStage() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ label_left: lR.label, label_right: rR.label }),
     }).then(r => r.json()).catch(() => null),
+    fetch('/api/semantic-scene', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        label_left:     lR.label,    label_right:     rR.label,
+        category_left:  lR.category, category_right:  rR.category,
+        tags_left:  resolveProfile({ label: lR.label,  category: lR.category,  confidence: 0.9 }).tags,
+        tags_right: resolveProfile({ label: rR.label,  category: rR.category,  confidence: 0.9 }).tags,
+      }),
+    }).then(r => r.json()).catch(() => null),
   ]);
+
+  if (sceneDesc && !sceneDesc.error) {
+    console.log('%c[semantic-scene] ' + sceneDesc.narrative, 'color:#a060ff;font-weight:bold');
+  }
 
   // ── Size override: absolute target-height sizing ──────────────────────────────
   // The LARGER real-world item (aiScale=1.0) is displayed at MAX_H_FRAC of screen.
@@ -754,20 +769,39 @@ async function transitionToAnimationStage() {
   }
 
   // ── Step 5: Register with animation engine ────────────────────────────────
+  // Anchored/static items always stay; mobiles use GPT-4o scene behavior.
+  const lProf = resolveProfile({ label: lR.label, category: lR.category, confidence: 0.9 });
+  const rProf = resolveProfile({ label: rR.label, category: rR.category, confidence: 0.9 });
+  const lAnchored = lProf.tags.includes('anchored') || lProf.tags.includes('mostly_static');
+  const rAnchored = rProf.tags.includes('anchored') || rProf.tags.includes('mostly_static');
+
   registerRecognizedSketch({
     id: 'agent_left',  label: lR.label,  category: lR.category,  confidence: 0.92,
     bbox: { x: W*0.25 - lg.w/2, y: H*0.5 - lg.h/2, width: lg.w, height: lg.h },
     layerRef: lg.group,
-    spawnScale: lg.group._baseScale ?? lg.group.scaleX(),
+    spawnScale:       lg.group._baseScale ?? lg.group.scaleX(),
+    behaviorOverride: lAnchored ? 'stay' : (sceneDesc ? sceneDesc.left_behavior  : null),
+    motionHint:       lAnchored ? 'idle' : (sceneDesc ? sceneDesc.left_motion_hint : null),
   });
 
   registerRecognizedSketch({
     id: 'agent_right', label: rR.label, category: rR.category, confidence: 0.92,
     bbox: { x: W*0.75 - rg.w/2, y: H*0.5 - rg.h/2, width: rg.w, height: rg.h },
     layerRef: rg.group,
-    spawnScale: rg.group._baseScale ?? rg.group.scaleX(),
+    spawnScale:       rg.group._baseScale ?? rg.group.scaleX(),
+    behaviorOverride: rAnchored ? 'stay' : (sceneDesc ? sceneDesc.right_behavior  : null),
+    motionHint:       rAnchored ? 'idle' : (sceneDesc ? sceneDesc.right_motion_hint : null),
   });
 
-  console.log(`[SquiggleWiggle] Spawned "${lR.label}" (${lR.category}) ✦ "${rR.label}" (${rR.category})`);
-  setTimeout(() => startInteractionEngine(), 800);
+  if (sceneDesc && sceneDesc.narrative) {
+    var nb = document.createElement('div');
+    nb.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:rgba(20,10,40,0.75);color:#fff;padding:10px 22px;border-radius:22px;font-family:system-ui,sans-serif;font-size:14px;pointer-events:none;z-index:9999;opacity:0;transition:opacity 0.5s;max-width:60vw;text-align:center;';
+    nb.textContent = sceneDesc.narrative;
+    document.body.appendChild(nb);
+    requestAnimationFrame(function(){ nb.style.opacity = '1'; });
+    setTimeout(function(){ nb.style.opacity='0'; setTimeout(function(){ nb.remove(); },600); },5500);
+  }
+
+  console.log('[SquiggleWiggle] "' + lR.label + '" x "' + rR.label + '" done');
+  setTimeout(function() { startInteractionEngine(); }, 800);
 }

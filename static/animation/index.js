@@ -58,32 +58,33 @@ const engine     = new InteractionEngine(registry, controller, INTERACTION_RULES
  * @returns {SceneAgent}
  */
 export function registerRecognizedSketch(recognitionResult) {
-  const { id, label, category, confidence, bbox, layerRef, frames, spawnScale } = recognitionResult;
+  const { id, label, category, confidence, bbox, layerRef, frames, spawnScale, behaviorOverride, motionHint } = recognitionResult;
  
-   // Resolve semantic profile (handles unknown labels gracefully)
    const profile = resolveProfile({ label, category, confidence });
  
    const agent = new SceneAgent({
      id,
-     label:         label || 'unknown',
-     category:      profile.category,
-     tags:          profile.tags,
-     defaultMotion: profile.defaultMotion,
-     motionParams:  profile.motionParams || {},
+     label:            label || 'unknown',
+     category:         profile.category,
+     tags:             profile.tags,
+     defaultMotion:    profile.defaultMotion,
+     motionParams:     profile.motionParams || {},
      bbox,
      layerRef,
      confidence,
      frames,
-     spawnScale,   // AI-determined display scale; engine must preserve this
+     spawnScale,
+     behaviorOverride, // 'stay'|'approach'|'flee'|'orbit'|'wander'|null
+     motionHint,       // 'walk'|'fly'|'idle'|'swim'|'bounce'|'sway'|null
    });
 
   registry.register(agent);
   controller.startIdle(agent);
 
   console.log(
-    `[SketchEngine] registered "${label}" → category:${profile.category}` +
-    ` motion:${profile.defaultMotion} scale:${spawnScale?.toFixed(3) ?? 'default'}` +
-    ` tags:[${profile.tags.join(', ')}]`
+    '[SketchEngine] registered "' + label + '" category:' + profile.category +
+    ' motion:' + profile.defaultMotion + ' behavior:' + (behaviorOverride || 'auto') +
+    ' scale:' + (spawnScale ? spawnScale.toFixed(3) : 'default')
   );
 
   return agent;

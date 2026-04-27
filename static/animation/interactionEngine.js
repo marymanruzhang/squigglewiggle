@@ -87,6 +87,7 @@ export class InteractionEngine {
 
     for (const agent of agents) {
       if (!agent.hasTag('mobile')) continue;
+      if (agent.behaviorOverride === 'stay') continue; // GPT-4o says this object stays put
       if (agent.state !== 'idle') continue;
 
       if (!agent._wander) {

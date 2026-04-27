@@ -186,7 +186,7 @@ export class SceneAgent {
    *   frames:       string[]
    * }} opts
    */
-  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames, spawnScale }) {
+  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames, spawnScale, behaviorOverride, motionHint }) {
     this.id            = id;
     this.label         = label;
     this.category      = category;
@@ -197,7 +197,6 @@ export class SceneAgent {
     this.confidence    = confidence    || 1.0;
     this.frames        = frames        || [];
 
-    // Pre-cache frame images for performance
     this.frameImages   = [];
     if (this.frames.length > 0) {
       this.frames.forEach(f => {
@@ -207,24 +206,22 @@ export class SceneAgent {
       });
     }
 
-    // Adapter wraps the raw layerRef
     this.adapter = new LayerAdapter(layerRef);
 
-    // Derive origin from adapter's current position
     const pos = this.adapter.getPosition();
     this.originPos = { x: pos.x, y: pos.y };
-    // spawnPos is immutable — always the original spawn point, never mutated by wander/story
     this.spawnPos  = { x: pos.x, y: pos.y };
-    // spawnScale: the AI-determined display scale; must be preserved across all engine resets
-    this.spawnScale = spawnScale ?? this.adapter._scaleX ?? 1;
+    this.spawnScale      = spawnScale      ?? this.adapter._scaleX ?? 1;
+    // GPT-4o semantic scene hints
+    this.behaviorOverride = behaviorOverride ?? null; // 'stay'|'approach'|'flee'|'orbit'|'wander'
+    this.motionHint       = motionHint       ?? null; // 'walk'|'fly'|'idle'|'swim'|'sway'
 
-    // Runtime state
-    this.state           = 'idle';
-    this.cancelIdle      = null;
-    this.cooldowns       = {};
-    this.activeStoryId   = null;
+    this.state               = 'idle';
+    this.cancelIdle          = null;
+    this.cooldowns           = {};
+    this.activeStoryId       = null;
     this.lastInteractionTime = 0;
-    this.homePosition    = null;
+    this.homePosition        = null;
   }
 
   /**

@@ -61,9 +61,9 @@ export const CATEGORY_DEFAULTS = {
     motionParams: { speed: 0.3 },
   },
   built_object: {
-    defaultMotion: 'subtle_wiggle',
-    tags: ['built_object', 'mostly_static'],
-    motionParams: { amplitude: 1.5, speed: 0.3 },
+    defaultMotion: 'static_motion',
+    tags: ['built_object', 'mostly_static', 'anchored'],
+    motionParams: {},
   },
   abstract_unknown: {
     defaultMotion: 'wiggle',
@@ -466,14 +466,14 @@ export const PROFILES = {
   },
   mountain: {
     category: 'landscape_water',
-    defaultMotion: 'static',
-    tags: ['environment', 'terrain', 'obstacle', 'landscape'],
+    defaultMotion: 'static_motion',
+    tags: ['environment', 'terrain', 'obstacle', 'landscape', 'anchored', 'mostly_static'],
     motionParams: {},
   },
   rock: {
     category: 'landscape_water',
-    defaultMotion: 'static',
-    tags: ['environment', 'terrain', 'obstacle'],
+    defaultMotion: 'static_motion',
+    tags: ['environment', 'terrain', 'obstacle', 'anchored', 'mostly_static'],
     motionParams: {},
   },
 
@@ -520,9 +520,9 @@ export const PROFILES = {
 
   house: {
     category: 'built_object',
-    defaultMotion: 'subtle_wiggle',
-    tags: ['built_object', 'shelter', 'mostly_static'],
-    motionParams: { amplitude: 1.5, speed: 0.3 },
+    defaultMotion: 'static_motion',
+    tags: ['built_object', 'shelter', 'mostly_static', 'anchored'],
+    motionParams: {},
   },
   umbrella: {
     category: 'built_object',

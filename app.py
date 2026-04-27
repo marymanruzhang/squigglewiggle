@@ -729,6 +729,79 @@ Rules:
         return jsonify({"error": str(e)}), 500
 
 
+# ── /api/semantic-scene ───────────────────────────────────────────────────────
+# Given two sketch labels + categories, asks GPT-4o to describe how they should
+# interact semantically. Returns motion hints, narrative, and approach behavior.
+@app.route("/api/semantic-scene", methods=["POST"])
+def semantic_scene():
+    data           = request.get_json(silent=True) or {}
+    label_left     = data.get("label_left",     "unknown")
+    label_right    = data.get("label_right",    "unknown")
+    category_left  = data.get("category_left",  "")
+    category_right = data.get("category_right", "")
+    tags_left      = data.get("tags_left",      [])
+    tags_right     = data.get("tags_right",     [])
+
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        return jsonify({"error": "No API key"}), 500
+
+    prompt = f"""Two hand-drawn sketches will animate together on screen.
+Sketch A (left):  "{label_left}"  category="{category_left}"  tags={tags_left}
+Sketch B (right): "{label_right}" category="{category_right}" tags={tags_right}
+
+Describe a brief, charming interaction between them. Return ONLY valid JSON:
+{{
+  "narrative": "one sentence describing what happens (e.g. 'The fairy flies toward the house and peeks through the window')",
+  "left_behavior": "approach|stay|flee|orbit|circle_around|wander",
+  "right_behavior": "approach|stay|flee|orbit|circle_around|wander",
+  "left_motion_hint": "one of: walk, fly, swim, bounce, sway, idle, spin",
+  "right_motion_hint": "one of: walk, fly, swim, bounce, sway, idle, spin",
+  "interaction_type": "one of: greet, chase, avoid, shelter, admire, play, coexist"
+}}
+
+Rules:
+- Anchored/terrain objects (mountain, house, rock, tree) ALWAYS have behavior "stay"
+- Mobile animals approach or interact with each other or with the environment
+- The interaction should match real-world logic (e.g. a bee pollinates a flower, a dog chases a cat)
+- Keep the narrative whimsical and one sentence
+
+Examples:
+  fairy + house     → fairy approaches house, house stays; fairy flies to house and peeks in the window
+  dog + cat         → dog approaches cat, cat flees; playful chase
+  butterfly + flower→ butterfly orbits flower, flower sways; butterfly pollinates the flower
+  sheep + mountain  → sheep wanders toward mountain, mountain stays; sheep grazes at the base of the mountain
+  fish + octopus    → both approach, swim together; two sea creatures meet and dance"""
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 300,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {openai_key}"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            result  = json.loads(response.read().decode())
+            content = result["choices"][0]["message"]["content"].strip()
+            cleaned = content.replace("```json", "").replace("```", "").strip()
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if m: cleaned = m.group(0)
+            parsed = json.loads(cleaned)
+            print(f"[semantic-scene] {label_left} ↔ {label_right}: {parsed.get('narrative','')}")
+            return jsonify(parsed)
+    except urllib.error.HTTPError as e:
+        return jsonify({"error": f"HTTP {e.code}: {e.read().decode()}"}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
 # ── /api/compare-sizes ────────────────────────────────────────────────────────
 # Given two sketch labels, asks GPT-4o for real-world relative sizes.
 # Returns { left_scale, right_scale } both in [0.05, 1.0] where the
