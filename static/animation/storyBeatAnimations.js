@@ -32,14 +32,23 @@ function approachPos(actor, target, margin = 60) {
   return { x: ac.x + dx / dist * stopDist, y: ac.y + dy / dist * stopDist };
 }
 
-/** Compute a position `fleeRange` px away from threat, in the opposite direction. */
+/** Compute a position `fleeRange` px away from threat, in the opposite direction.
+ *  Result is clamped to stay within the stage canvas so agents can't flee off-screen. */
 function fleePos(actor, threat, fleeRange = 130) {
   const ac = center(actor);
   const tc = center(threat);
   const dx = ac.x - tc.x;
   const dy = ac.y - tc.y;
   const dist = Math.hypot(dx, dy) || 1;
-  return { x: ac.x + dx / dist * fleeRange, y: ac.y + dy / dist * fleeRange };
+  const raw = { x: ac.x + dx / dist * fleeRange, y: ac.y + dy / dist * fleeRange };
+  // Clamp to stage bounds with 120px margin
+  const stage = actor.adapter.ref?.getStage?.();
+  const sw = stage?.width()  ?? 1200;
+  const sh = stage?.height() ?? 700;
+  return {
+    x: Math.max(120, Math.min(sw - 120, raw.x)),
+    y: Math.max(120, Math.min(sh - 120, raw.y)),
+  };
 }
 
 /** Animate rotation from current to `targetDeg` over `ms`, then snap. */
@@ -48,11 +57,17 @@ async function rotateToward(agent, targetDeg, ms = 300) {
   await _tweenProp(ms, t => agent.adapter.setRotation(lerp(startRot, targetDeg, t)));
 }
 
-/** Animate scale from current to `targetScale` and back, creating a pulse. */
-async function scalePulse(agent, targetScale = 1.25, halfDurationMs = 250) {
-  const start = agent.adapter._scaleX ?? 1;
-  await _tweenProp(halfDurationMs, t => agent.adapter.setScale(lerp(start, targetScale, t)));
-  await _tweenProp(halfDurationMs, t => agent.adapter.setScale(lerp(targetScale, start, t)));
+/** Returns the locked spawn-scale for an agent (the ONE true base scale). */
+const BASE = agent => agent.spawnScale ?? agent.adapter._scaleX ?? 1;
+
+/** Animate scale from current to `targetScale` (relative multiplier, e.g. 1.25 = 25% bigger)
+ *  and back, creating a pulse. Scale is always multiplied by spawnScale so the
+ *  base size never drifts. */
+async function scalePulse(agent, relTarget = 1.25, halfDurationMs = 250) {
+  const base = BASE(agent);
+  const hi   = base * relTarget;
+  await _tweenProp(halfDurationMs, t => agent.adapter.setScale(lerp(base, hi,   t)));
+  await _tweenProp(halfDurationMs, t => agent.adapter.setScale(lerp(hi,   base, t)));
 }
 
 /** Generic tween from 0→1 using easeInOut over `ms`. */
@@ -343,9 +358,10 @@ export async function landNearTarget(actor, target, ctrl, params = {}) {
   const landY = tc.y - target.bbox.height / 2 - yOffsetFromTop;
   ctrl.stop(actor.id);
   await ctrl.moveTo(actor, landX, landY, durationMs);
-  // Small settle bounce
-  await _tweenProp(200, t => actor.adapter.setScale(lerp(1, 0.9, t)));
-  await _tweenProp(150, t => actor.adapter.setScale(lerp(0.9, 1, t)));
+  // Small settle bounce — always relative to spawnScale so size stays consistent
+  const base = BASE(actor);
+  await _tweenProp(200, t => actor.adapter.setScale(lerp(base, base * 0.9, t)));
+  await _tweenProp(150, t => actor.adapter.setScale(lerp(base * 0.9, base, t)));
 }
 
 /**

@@ -4,7 +4,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700;900&display=swap" rel="stylesheet">
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Inventor's Whiteboard</title>
+<title>Time to Make the Squiggles Wiggle</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -21,10 +21,10 @@
     width: 100vw; height: 100vh;
   }
 
-  /* Camera PiP */
+  /* Camera PiP — top-right corner */
   #camera-pip {
     position: fixed;
-    bottom: 16px; right: 16px;
+    top: 16px; right: 16px;
     width: 180px; height: 120px;
     border-radius: 12px;
     overflow: hidden;
@@ -216,6 +216,85 @@
   }
   #start-btn:hover { transform: scale(1.04); }
 
+  /* End button (lives inside #bottom-dock, stacked below narrative text) */
+  #end-btn {
+    background: rgba(30, 10, 60, 0.82);
+    color: #fff;
+    border: 2px solid rgba(255,255,255,0.25);
+    padding: 12px 38px;
+    border-radius: 32px;
+    font-size: 16px;
+    font-family: 'Georgia', serif;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    backdrop-filter: blur(10px);
+    box-shadow: 0 6px 28px rgba(0,0,0,0.35);
+    pointer-events: all;
+    display: none;
+    transition: transform 0.15s, background 0.2s;
+    white-space: nowrap;
+  }
+  #end-btn:hover { transform: scale(1.06); background: rgba(60,20,100,0.88); }
+  #end-btn.visible { display: block; }
+
+  /* Thank-you screen */
+  #thankyou-screen {
+    position: fixed;
+    inset: 0;
+    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 10000;
+    gap: 20px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.7s ease;
+  }
+  #thankyou-screen.visible {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .ty-squiggles {
+    font-size: 54px;
+    animation: wiggle-icon 1.4s ease-in-out infinite alternate;
+  }
+  @keyframes wiggle-icon {
+    from { transform: rotate(-8deg) scale(1);   }
+    to   { transform: rotate( 8deg) scale(1.12); }
+  }
+  #thankyou-screen h1 {
+    font-size: clamp(22px, 4vw, 40px);
+    font-family: 'Georgia', serif;
+    color: #fff;
+    text-align: center;
+    max-width: 640px;
+    line-height: 1.35;
+    text-shadow: 0 2px 18px rgba(160,100,255,0.5);
+    margin: 0;
+  }
+  #thankyou-screen p {
+    color: rgba(255,255,255,0.65);
+    font-size: 16px;
+    text-align: center;
+    margin: 0;
+  }
+  #restart-btn {
+    margin-top: 10px;
+    background: linear-gradient(135deg, #7c3aed, #ec4899);
+    color: #fff;
+    border: none;
+    padding: 15px 46px;
+    border-radius: 32px;
+    font-size: 17px;
+    cursor: pointer;
+    box-shadow: 0 8px 28px rgba(124,58,237,0.45);
+    transition: transform 0.15s, box-shadow 0.15s;
+    letter-spacing: 0.03em;
+  }
+  #restart-btn:hover { transform: scale(1.06); box-shadow: 0 10px 36px rgba(124,58,237,0.6); }
+
   /* Per-zone toolbars */
   .zone-toolbar {
     position: fixed;
@@ -274,6 +353,13 @@
   }
   .undo-btn:hover { background: #f0f0ff; border-color: #99a; }
   .undo-btn:disabled { opacity: 0.3; cursor: default; }
+  .clear-btn {
+    background: none; border: 1px solid #ccc; border-radius: 8px;
+    padding: 3px 10px; cursor: pointer; font-size: 13px;
+    transition: background 0.15s;
+    white-space: nowrap;
+  }
+  .clear-btn:hover { background: #fee; border-color: #e55; color: #c00; }
 
   #save-all-btn {
     position: fixed;
@@ -313,9 +399,12 @@
 
   <!-- Welcome -->
   <div id="welcome">
-    <svg width="80" height="52" viewBox="0 0 120 78"><path d="M100,54 C110,54 118,46 118,36 C118,27 111,20 102,20 C99,9 89,2 77,2 C64,2 53,11 51,23 C48,21 44,20 40,20 C29,20 20,29 20,40 C20,51 29,60 40,60 L100,60 Z" fill="#dce8f0" stroke="#a0bfcf" stroke-width="2"/></svg>
-    <h1>Inventor's Whiteboard</h1>
-    <p>Step in front of the camera, and transform a cloud into something new. Up to 2 inventors can draw simultaneously.</p>
+    <svg width="80" height="60" viewBox="0 0 100 70">
+      <!-- Wiggly squiggle icon -->
+      <path d="M 8,42 C 18,28 32,28 42,42 C 52,56 66,56 76,42 C 86,28 100,28 110,42" fill="none" stroke="#2d6a4f" stroke-width="5" stroke-linecap="round"/>
+    </svg>
+    <h1>Time to Make the Squiggles Wiggle</h1>
+    <p>Step in front of the camera and transform a shape into something new. Up to 2 creators can draw simultaneously.</p>
     <button id="start-btn">Start Experience →</button>
   </div>
 
@@ -389,14 +478,14 @@
     <div class="color-swatch" data-zone="left" data-color="#2196F3" style="background:#2196F3"></div>
     <div class="color-swatch" data-zone="left" data-color="#4CAF50" style="background:#4CAF50"></div>
     <div class="color-swatch" data-zone="left" data-color="#FF9800" style="background:#FF9800"></div>
-    <div class="color-swatch" data-zone="left" data-color="#9C27B0" style="background:#9C27B0"></div>
     <div class="toolbar-sep"></div>
     <button class="size-btn" data-zone="left" data-size="3">S</button>
     <button class="size-btn selected" data-zone="left" data-size="6">M</button>
     <button class="size-btn" data-zone="left" data-size="12">L</button>
     <div class="toolbar-sep"></div>
     <button class="eraser-btn" id="eraser-left">⌫ Erase</button>
-    <button class="undo-btn" id="undo-left" title="Undo last stroke">↩ Undo</button>
+    <button class="undo-btn"   id="undo-left"   title="Undo last stroke">↩ Undo</button>
+    <button class="clear-btn" id="clear-left"  title="Clear all strokes">🗑 Clear All</button>
   </div>
 
   <!-- Right toolbar -->
@@ -406,14 +495,14 @@
     <div class="color-swatch" data-zone="right" data-color="#2196F3" style="background:#2196F3"></div>
     <div class="color-swatch" data-zone="right" data-color="#4CAF50" style="background:#4CAF50"></div>
     <div class="color-swatch" data-zone="right" data-color="#FF9800" style="background:#FF9800"></div>
-    <div class="color-swatch" data-zone="right" data-color="#9C27B0" style="background:#9C27B0"></div>
     <div class="toolbar-sep"></div>
     <button class="size-btn" data-zone="right" data-size="3">S</button>
     <button class="size-btn selected" data-zone="right" data-size="6">M</button>
     <button class="size-btn" data-zone="right" data-size="12">L</button>
     <div class="toolbar-sep"></div>
     <button class="eraser-btn" id="eraser-right">⌫ Erase</button>
-    <button class="undo-btn" id="undo-right" title="Undo last stroke">↩ Undo</button>
+    <button class="undo-btn"   id="undo-right"  title="Undo last stroke">↩ Undo</button>
+    <button class="clear-btn" id="clear-right" title="Clear all strokes">🗑 Clear All</button>
   </div>
 
   <button id="save-all-btn">💾 Save Results</button>
@@ -425,6 +514,17 @@
      ══════════════════════════════════════════════════════════ -->
 <div id="stagePhase" class="hidden">
   <div id="storyStageInner"></div>
+</div>
+
+<!-- End button (visible during animation stage) -->
+<button id="end-btn">✦ End</button>
+
+<!-- Thank-you screen -->
+<div id="thankyou-screen">
+  <div class="ty-squiggles">🌀</div>
+  <h1>Thank you for making<br>these squiggles wiggle!</h1>
+  <p>Your sketches came to life and told a story together.</p>
+  <button id="restart-btn">↩ Restart</button>
 </div>
 
 <script src="https://unpkg.com/konva@9/konva.min.js"></script>

@@ -9,7 +9,7 @@ import {
 } from '/static/animation/index.js';
 
 import { STORY_TEMPLATES } from '/static/animation/storyTemplates.js';
-import { detectParts, buildPartGroup, getSemanticScale } from '/static/animation/partAnimator.js';
+import { detectParts, buildPartGroup, getSemanticScale, SEMANTIC_SCALE_KNOWN } from '/static/animation/partAnimator.js';
 import { resolveProfile } from '/static/animation/semanticProfiles.js';
 
 
@@ -19,14 +19,11 @@ const MIN_STROKES_FOR_DONE_BTN = 1;
 const state = {
   activeZones: { left: false, right: false },
   submitted:   { left: false, right: false },
-  drawing: false,
   drawSettings: {
     left:  { color: '#1a1a1a', size: 6, erasing: false },
     right: { color: '#1a1a1a', size: 6, erasing: false },
   },
-  lastX: 0, lastY: 0,
   strokesByZone: { left: [], right: [] },
-  currentStroke: null,
   analyzing: { left: false, right: false },
   results: { left: null, right: null },
   svgPaths: { left: [], right: [] },
@@ -252,82 +249,90 @@ function setZoneActive(side, active) {
 
 // ─── Drawing ──────────────────────────────────────────────────────────────────
 function setupDrawing() {
-  canvas.addEventListener('pointerdown', onPointerDown);
-  canvas.addEventListener('pointermove', onPointerMove);
-  canvas.addEventListener('pointerup', onPointerUp);
+  canvas.addEventListener('pointerdown',  onPointerDown);
+  canvas.addEventListener('pointermove',  onPointerMove);
+  canvas.addEventListener('pointerup',    onPointerUp);
   canvas.addEventListener('pointerleave', onPointerUp);
-  canvas.setPointerCapture = canvas.setPointerCapture || (() => {});
+  canvas.addEventListener('pointercancel',onPointerUp);
 }
+
+// Per-pointer stroke state — enables simultaneous two-person drawing.
+// Key: e.pointerId  Value: { zone, lastX, lastY, currentStroke }
+const activeStrokes = new Map();
 
 function getZoneForX(x) {
   return x < window.innerWidth / 2 ? 'left' : 'right';
 }
 
 function onPointerDown(e) {
-  if (e.button !== undefined && e.button !== 0) return;
+  if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return;
   const zone = getZoneForX(e.clientX);
   if (!state.activeZones[zone]) return;
   if (state.analyzing[zone]) return;
 
-  const s = state.drawSettings[zone];
-  state.drawing = true;
-  state.lastX = e.clientX;
-  state.lastY = e.clientY;
+  // Capture this pointer so we continue receiving moves even outside canvas
+  try { canvas.setPointerCapture(e.pointerId); } catch (_) {}
 
-  state.currentStroke = {
+  const s = state.drawSettings[zone];
+  activeStrokes.set(e.pointerId, {
     zone,
-    color: s.erasing ? 'rgba(0,0,0,1)' : s.color,
-    size:  s.erasing ? s.size * 4 : s.size,
-    points: [{ x: e.clientX, y: e.clientY }],
-    erasing: s.erasing,
-  };
+    lastX: e.clientX,
+    lastY: e.clientY,
+    currentStroke: {
+      zone,
+      color:   s.erasing ? 'rgba(0,0,0,1)' : s.color,
+      size:    s.erasing ? s.size * 4 : s.size,
+      points:  [{ x: e.clientX, y: e.clientY }],
+      erasing: s.erasing,
+    },
+  });
 }
 
 function onPointerMove(e) {
-  if (!state.drawing || !state.currentStroke) return;
-  const zone = getZoneForX(e.clientX);
-  if (zone !== state.currentStroke.zone) return; // Don't cross zones
+  const ps = activeStrokes.get(e.pointerId);
+  if (!ps) return;
 
-  state.currentStroke.points.push({ x: e.clientX, y: e.clientY });
+  // Don't let a stroke cross into the other zone
+  if (getZoneForX(e.clientX) !== ps.zone) return;
 
-  // Draw incrementally
-  ctx.globalCompositeOperation = state.currentStroke.erasing ? 'destination-out' : 'source-over';
+  ps.currentStroke.points.push({ x: e.clientX, y: e.clientY });
+
+  ctx.globalCompositeOperation = ps.currentStroke.erasing ? 'destination-out' : 'source-over';
   ctx.beginPath();
-  ctx.strokeStyle = state.currentStroke.color;
-  ctx.lineWidth   = state.currentStroke.size;
+  ctx.strokeStyle = ps.currentStroke.color;
+  ctx.lineWidth   = ps.currentStroke.size;
   ctx.lineCap     = 'round';
   ctx.lineJoin    = 'round';
-  ctx.moveTo(state.lastX, state.lastY);
+  ctx.moveTo(ps.lastX, ps.lastY);
   ctx.lineTo(e.clientX, e.clientY);
   ctx.stroke();
-  ctx.globalCompositeOperation = 'source-over'; // reset
+  ctx.globalCompositeOperation = 'source-over';
 
-  state.lastX = e.clientX;
-  state.lastY = e.clientY;
+  ps.lastX = e.clientX;
+  ps.lastY = e.clientY;
 }
 
-function onPointerUp() {
-  if (!state.drawing || !state.currentStroke) return;
-  state.drawing = false;
+function onPointerUp(e) {
+  const ps = activeStrokes.get(e.pointerId);
+  if (!ps) return;
+  activeStrokes.delete(e.pointerId);
 
-  if (state.currentStroke.points.length > 1) {
-    const { zone } = state.currentStroke;
-    state.strokesByZone[zone].push(state.currentStroke);
+  if (ps.currentStroke.points.length > 1) {
+    const { zone } = ps.currentStroke;
+    state.strokesByZone[zone].push(ps.currentStroke);
 
-    // Update SVG path record
-    const pts = state.currentStroke.points;
+    const pts = ps.currentStroke.points;
     let d = `M${pts[0].x},${pts[0].y}`;
     pts.slice(1).forEach(p => d += ` L${p.x},${p.y}`);
     state.svgPaths[zone].push({
-      d, color: state.currentStroke.color, size: state.currentStroke.size,
-      erasing: state.currentStroke.erasing,
+      d, color: ps.currentStroke.color, size: ps.currentStroke.size,
+      erasing: ps.currentStroke.erasing,
     });
 
-    // Show/hide done button based on non-erase strokes
     updateDoneBtn(zone);
   }
-  state.currentStroke = null;
 }
+
 
 function updateDoneBtn(zone) {
   const nonErase = state.strokesByZone[zone].filter(s => !s.erasing);
@@ -383,41 +388,44 @@ async function analyzeZone(zone) {
   btn.disabled = true;
   spin.classList.add('visible');
 
-  // Capture zone canvas (includes cloud SVG)
-  const zoneCanvas = await captureZoneCanvas(zone);
+  // Capture full composite (mountain SVG template + user strokes) for both
+  // classification and animation. GPT-4o handles the background fine, and
+  // including the mountain gives it crucial context for what was "invented".
+  const zoneCanvas = await captureZoneCanvas(zone, false);
+  state.snapshots = state.snapshots || {};
+  state.snapshots[zone] = zoneCanvas;
   const dataUrl = zoneCanvas.toDataURL('image/png');
 
   try {
     const result = await identifyDoodle(dataUrl);
+    console.log(`%c[classify] "${zone}" → ${result.label} (${result.category})`, 'color:#2d6a4f;font-weight:bold');
     state.results[zone] = result;
     state.submitted[zone] = true;
 
-    // Mark zone as submitted — hides text prompt, keeps SVG
     const zoneEl = zone === 'left' ? zoneLeft : zoneRight;
     zoneEl.classList.add('submitted');
 
     catEl.textContent  = result.category;
     lblEl.textContent  = result.label;
-        res.classList.add('visible');
+    res.classList.add('visible');
     spin.classList.remove('visible');
 
-    // NEW: Check if both zones are submitted to transition to animation stage
     if (state.submitted.left && state.submitted.right) {
       setTimeout(() => transitionToAnimationStage(), 1000);
     }
-    
+
     checkSaveAll();
   } catch (e) {
     spin.classList.remove('visible');
     btn.disabled = false;
     btn.textContent = '⚠ Retry';
     state.analyzing[zone] = false;
-    console.error('Analysis failed:', e);
+    console.error('[classify] Analysis failed:', e);
     setStatus('⚠ API error – check console');
   }
 }
 
-async function captureZoneCanvas(zone) {
+async function captureZoneCanvas(zone, strokesOnly = false) {
   const W = window.innerWidth;
   const H = window.innerHeight;
   const half = W / 2;
@@ -427,33 +435,31 @@ async function captureZoneCanvas(zone) {
   offscreen.height = H;
   const oc = offscreen.getContext('2d');
 
-  // 1. Background
-  oc.fillStyle = '#f8f5f0';
+  // Always start with white background
+  oc.fillStyle = strokesOnly ? '#ffffff' : '#f8f5f0';
   oc.fillRect(0, 0, half, H);
 
-  // 2. Draw cloud SVG at its screen position
-  const cloudEl = document.querySelector(`#zone-${zone} .cloud-svg`);
-  if (cloudEl) {
-    const rect = cloudEl.getBoundingClientRect();
-    let svgStr = new XMLSerializer().serializeToString(cloudEl);
-    if (!svgStr.includes('xmlns=')) {
-      svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+  if (!strokesOnly) {
+    // Draw cloud SVG at its screen position (used for animation snapshot)
+    const cloudEl = document.querySelector(`#zone-${zone} .cloud-svg`);
+    if (cloudEl) {
+      const rect = cloudEl.getBoundingClientRect();
+      let svgStr = new XMLSerializer().serializeToString(cloudEl);
+      if (!svgStr.includes('xmlns=')) {
+        svgStr = svgStr.replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"');
+      }
+      const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+      const url  = URL.createObjectURL(blob);
+      await new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => { oc.drawImage(img, rect.left - xOff, rect.top, rect.width, rect.height); URL.revokeObjectURL(url); resolve(); };
+        img.onerror = resolve;
+        img.src = url;
+      });
     }
-    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-    const url  = URL.createObjectURL(blob);
-    await new Promise(resolve => {
-      const img = new Image();
-      img.onload = () => {
-        oc.drawImage(img, rect.left - xOff, rect.top, rect.width, rect.height);
-        URL.revokeObjectURL(url);
-        resolve();
-      };
-      img.onerror = resolve;
-      img.src = url;
-    });
   }
 
-  // 3. User strokes on top
+  // User strokes on top
   oc.drawImage(canvas, xOff, 0, half, H, 0, 0, half, H);
   return offscreen;
 }
@@ -564,6 +570,10 @@ function setupToolbar() {
     const undoBtn = document.getElementById(`undo-${zone}`);
     undoBtn.disabled = true;
     undoBtn.addEventListener('click', () => undoZone(zone));
+
+    // Clear All button
+    const clearBtn = document.getElementById(`clear-${zone}`);
+    if (clearBtn) clearBtn.addEventListener('click', () => clearZone(zone));
   });
 }
 
@@ -571,6 +581,18 @@ function undoZone(zone) {
   if (state.strokesByZone[zone].length === 0) return;
   state.strokesByZone[zone].pop();
   state.svgPaths[zone].pop();
+  redrawAll();
+  updateDoneBtn(zone);
+}
+
+function clearZone(zone) {
+  if (state.strokesByZone[zone].length === 0) return;
+  state.strokesByZone[zone] = [];
+  state.svgPaths[zone]      = [];
+  // Turn off eraser mode if it was active
+  state.drawSettings[zone].erasing = false;
+  const eraserBtn = document.getElementById(`eraser-${zone}`);
+  if (eraserBtn) eraserBtn.classList.remove('selected');
   redrawAll();
   updateDoneBtn(zone);
 }
@@ -717,43 +739,160 @@ async function transitionToAnimationStage() {
     console.log('%c[semantic-scene] ' + sceneDesc.narrative, 'color:#a060ff;font-weight:bold');
   }
 
-  // ── Size override: absolute target-height sizing ──────────────────────────────
-  // The LARGER real-world item (aiScale=1.0) is displayed at MAX_H_FRAC of screen.
-  // The SMALLER item is displayed at MAX_H_FRAC * its aiScale fraction.
-  // This guarantees large items always LOOK large on screen.
-  const MAX_H_FRAC = 0.62;  // larger item fills 62% of screen height
-  const MIN_H_PX   = H * 0.12; // nothing smaller than 12% of screen height
-  let leftTargetH, rightTargetH;
+  // ── Sizing constants ──────────────────────────────────────────────────────────
+  // Display size is derived from real-world relative size, NOT from how big
+  // the user drew the sketch on screen.
+  //
+  // The larger real-world object fills LARGE_H_FRAC of the screen height.
+  // The smaller object is scaled proportionally.  Nothing goes below MIN_H_PX
+  // (so tiny insects are still visible) or above MAX_H_PX (so mountains don't
+  // overflow the canvas).
+  const LARGE_H_FRAC = 0.50;                      // "biggest" item = 50% screen height
+  const MIN_H_PX     = Math.max(80, H * 0.08);    // floor  : 8% of screen
+  const MAX_H_PX     = H * 0.78;                   // ceiling: 78% of screen
+
+  // ── Step 1: get semantic table values (always available, hand-calibrated) ─────
+  // These are the ground-truth relative real-world sizes.  We always compute
+  // target heights from this table first.
+  const semL = getSemanticScale(lR.label);   // e.g. flower = 0.70
+  const semR = getSemanticScale(rR.label);   // e.g. butterfly = 0.55
+  const semMax = Math.max(semL, semR, 0.1);
+  const baseH  = H * LARGE_H_FRAC;
+
+  let leftTargetH  = Math.min(MAX_H_PX, Math.max(MIN_H_PX, baseH * (semL / semMax)));
+  let rightTargetH = Math.min(MAX_H_PX, Math.max(MIN_H_PX, baseH * (semR / semMax)));
+
+  console.log(
+    `%c[scaling] Semantic table: "${lR.label}"=${semL} "${rR.label}"=${semR}` +
+    ` → L=${leftTargetH.toFixed(0)}px R=${rightTargetH.toFixed(0)}px`,
+    'color:#7c3aed;font-weight:bold'
+  );
+
+  // ── Step 2: optionally refine with GPT compare-sizes ─────────────────────────
+  // Only trust GPT if BOTH labels are absent from the semantic table (unknown
+  // objects), OR if GPT's ordering agrees with the semantic table's ordering.
+  // If GPT contradicts the semantic table for a known item, ignore GPT.
+  const LEFT_IN_TABLE  = SEMANTIC_SCALE_KNOWN.has(lR.label.toLowerCase());
+  const RIGHT_IN_TABLE = SEMANTIC_SCALE_KNOWN.has(rR.label.toLowerCase());
+  const bothUnknown    = !LEFT_IN_TABLE && !RIGHT_IN_TABLE;
 
   if (sizeComp && !sizeComp.error && sizeComp.left_scale !== undefined) {
-    const maxAi = Math.max(sizeComp.left_scale, sizeComp.right_scale);
-    console.log(`[compare-sizes] "${lR.label}"=${sizeComp.left_scale.toFixed(2)} ` +
-                `vs "${rR.label}"=${sizeComp.right_scale.toFixed(2)} — ${sizeComp.reasoning}`);
-    leftTargetH  = Math.max(MIN_H_PX, H * MAX_H_FRAC * (sizeComp.left_scale  / maxAi));
-    rightTargetH = Math.max(MIN_H_PX, H * MAX_H_FRAC * (sizeComp.right_scale / maxAi));
-    console.log(`[compare-sizes] targets: "${lR.label}"=${leftTargetH.toFixed(0)}px "${rR.label}"=${rightTargetH.toFixed(0)}px`);
+    const gL = Math.max(0.10, parseFloat(sizeComp.left_scale)  || 1.0);
+    const gR = Math.max(0.10, parseFloat(sizeComp.right_scale) || 1.0);
+
+    // Verify GPT ordering matches semantic table (or both are unknown)
+    const semSaysLeftBigger = semL >= semR;
+    const gptSaysLeftBigger = gL  >= gR;
+    const orderingAgrees    = semSaysLeftBigger === gptSaysLeftBigger;
+
+    if (bothUnknown || orderingAgrees) {
+      const gMax = Math.max(gL, gR);
+      const gptL = Math.min(MAX_H_PX, Math.max(MIN_H_PX, baseH * (gL / gMax)));
+      const gptR = Math.min(MAX_H_PX, Math.max(MIN_H_PX, baseH * (gR / gMax)));
+
+      // Blend: GPT provides the exact ratio, semantic table provides the anchor
+      // Use GPT values but only if at least one label is known in the table
+      // (so the anchor is reliable).  If both unknown, trust GPT entirely.
+      if (bothUnknown) {
+        leftTargetH  = gptL;
+        rightTargetH = gptR;
+        console.log(`%c[scaling] GPT (both unknown): "${lR.label}"=${gL.toFixed(2)} "${rR.label}"=${gR.toFixed(2)} → L=${leftTargetH.toFixed(0)}px R=${rightTargetH.toFixed(0)}px`, 'color:#059669;font-weight:bold');
+      } else {
+        // GPT agrees with semantic ordering — use GPT ratio but cap extremes
+        // by blending 50/50 with the semantic values so we don't drift too far
+        leftTargetH  = Math.min(MAX_H_PX, Math.max(MIN_H_PX, (leftTargetH  + gptL) / 2));
+        rightTargetH = Math.min(MAX_H_PX, Math.max(MIN_H_PX, (rightTargetH + gptR) / 2));
+        console.log(`%c[scaling] GPT blend: L=${leftTargetH.toFixed(0)}px R=${rightTargetH.toFixed(0)}px (${sizeComp.reasoning})`, 'color:#0284c7;font-weight:bold');
+      }
+    } else {
+      console.log(`%c[scaling] GPT overruled (ordering mismatch). Using semantic table only.`, 'color:#dc2626;font-weight:bold');
+    }
   }
 
+  console.log(`%c[scaling] Final targets: "${lR.label}"=${leftTargetH.toFixed(0)}px "${rR.label}"=${rightTargetH.toFixed(0)}px`, 'color:#7c3aed;font-weight:bold');
+
   // ── Step 4b: Build Konva groups ───────────────────────────────────────────────
+  // buildPartGroup is called with overrideScale=1.0 so it NEVER applies its own
+  // semantic scale. We are the single authority for all scaling below.
+
+  // ── AI color cache (label → [r,g,b,a]) ────────────────────────────────────
+  // Calls /api/sketch-color (GPT-4o-mini) for any label not already cached.
+  // Each unique label is looked up at most once per page session.
+  const _colorCache = new Map();
+
+  async function fetchSketchColor(label) {
+    const key = (label || '').toLowerCase();
+    if (_colorCache.has(key)) return _colorCache.get(key);
+    try {
+      const res = await fetch('/api/sketch-color', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ label: key }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const { r, g, b, a } = await res.json();
+      const color = [r, g, b, a ?? 165];
+      _colorCache.set(key, color);
+      console.log(`%c[color] "${key}" → rgba(${color})`, 'color:#e07830;font-weight:bold');
+      return color;
+    } catch (err) {
+      console.warn(`[color] fetch failed for "${key}", using default:`, err.message);
+      const fallback = [220, 210, 195, 150];
+      _colorCache.set(key, fallback);
+      return fallback;
+    }
+  }
+
   async function spawnSketch(snap, parts, label, category, cx, cy, agentId, targetH) {
-    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label);
-    if (!result) {
-      console.warn(`[partAnimator] buildPartGroup failed for "${label}", falling back`);
-      return makeGroup(snap.toDataURL('image/png'), cx, cy, agentId);
+    // Fetch AI-determined fill color before building — ensures vivid color on first render
+    const fillColor = await fetchSketchColor(label);
+    // Pass overrideScale=1.0 → buildPartGroup returns naturalW/naturalH at 1:1
+    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label, 1.0, fillColor);
+
+    if (!result || !result.naturalH || result.naturalH < 1) {
+      console.warn(`[scaling] buildPartGroup failed for "${label}", using flat fallback`);
+      const fbDataURL = snap.toDataURL('image/png');
+      const fbResult  = await makeGroup(fbDataURL, cx, cy, agentId);
+      if (!fbResult) return null;
+      // Size the fallback group too
+      const fbScale = targetH ? Math.min(MAX_H_PX, Math.max(MIN_H_PX, targetH)) / Math.max(fbResult.h, 1) : 1;
+      fbResult.group.scaleX(fbScale);
+      fbResult.group.scaleY(fbScale);
+      fbResult.group._baseScale = fbScale;
+      fbResult.w = fbResult.w * fbScale;
+      fbResult.h = fbResult.h * fbScale;
+      return fbResult;
     }
-    // Apply absolute target height — ensures large objects look large.
-    if (targetH && result.naturalH) {
-      const s = targetH / result.naturalH;
-      result.group.scaleX(s);
-      result.group.scaleY(s);
-      result.w = result.naturalW * s;
-      result.h = result.naturalH * s;
-      result.group._baseScale = s; // remember so engine never resets it
-      console.log(`[compare-sizes] "${label}" s=${s.toFixed(3)} → ${result.h.toFixed(0)}px tall`);
-    } else {
-      // Preserve whatever semantic scale was applied by buildPartGroup
-      result.group._baseScale = result.group.scaleX();
-    }
+
+    // Compute unified scale: target display height ÷ natural pixel height
+    const finalScale = targetH
+      ? Math.min(10, Math.max(0.05, targetH / result.naturalH))
+      : 1.0;
+
+    // Apply scale uniformly
+    result.group.scaleX(finalScale);
+    result.group.scaleY(finalScale);
+
+    // Re-center the group at (cx, cy) after scaling
+    result.group.x(cx);
+    result.group.y(cy);
+
+    const displayW = result.naturalW * finalScale;
+    const displayH = result.naturalH * finalScale;
+
+    // Store as the PERMANENT base scale — nothing changes this after spawn.
+    // storyRunner resets to this value after every beat to prevent drift.
+    result.group._baseScale    = finalScale;
+    result.group._scaleLocked  = true;   // debug sentinel
+    result.w = displayW;
+    result.h = displayH;
+
+    console.log(
+      `[scaling] "${label}" naturalH=${result.naturalH.toFixed(0)}px` +
+      ` × scale=${finalScale.toFixed(3)} → display=${displayH.toFixed(0)}px tall`
+    );
+
+    konvaLayer.batchDraw();
     return result;
   }
 
@@ -762,46 +901,116 @@ async function transitionToAnimationStage() {
     spawnSketch(rightSnap, rightParts, rR.label, rR.category, W*0.75, H*0.5, 'agent_right', rightTargetH),
   ]);
 
-
   if (!lg || !rg) {
     console.error('[SquiggleWiggle] Failed to build Konva groups — aborting animation');
     return;
   }
 
-  // ── Step 5: Register with animation engine ────────────────────────────────
-  // Anchored/static items always stay; mobiles use GPT-4o scene behavior.
-  const lProf = resolveProfile({ label: lR.label, category: lR.category, confidence: 0.9 });
-  const rProf = resolveProfile({ label: rR.label, category: rR.category, confidence: 0.9 });
+  // ── Step 5: Register with animation engine ────────────────────────────────────
+  // spawnScale MUST match the group's actual scaleX() or the engine will fight it.
+  const lProf     = resolveProfile({ label: lR.label, category: lR.category, confidence: 0.9 });
+  const rProf     = resolveProfile({ label: rR.label, category: rR.category, confidence: 0.9 });
   const lAnchored = lProf.tags.includes('anchored') || lProf.tags.includes('mostly_static');
   const rAnchored = rProf.tags.includes('anchored') || rProf.tags.includes('mostly_static');
 
   registerRecognizedSketch({
-    id: 'agent_left',  label: lR.label,  category: lR.category,  confidence: 0.92,
-    bbox: { x: W*0.25 - lg.w/2, y: H*0.5 - lg.h/2, width: lg.w, height: lg.h },
-    layerRef: lg.group,
-    spawnScale:       lg.group._baseScale ?? lg.group.scaleX(),
-    behaviorOverride: lAnchored ? 'stay' : (sceneDesc ? sceneDesc.left_behavior  : null),
-    motionHint:       lAnchored ? 'idle' : (sceneDesc ? sceneDesc.left_motion_hint : null),
+    id: 'agent_left',  label: lR.label,  category: lR.category, confidence: 0.92,
+    bbox:             { x: W*0.25 - lg.w/2, y: H*0.5 - lg.h/2, width: lg.w, height: lg.h },
+    layerRef:         lg.group,
+    spawnScale:       lg.group._baseScale,
+    behaviorOverride: lAnchored ? 'stay' : (sceneDesc?.left_behavior   ?? null),
+    motionHint:       lAnchored ? 'idle' : (sceneDesc?.left_motion_hint ?? null),
   });
 
   registerRecognizedSketch({
     id: 'agent_right', label: rR.label, category: rR.category, confidence: 0.92,
-    bbox: { x: W*0.75 - rg.w/2, y: H*0.5 - rg.h/2, width: rg.w, height: rg.h },
-    layerRef: rg.group,
-    spawnScale:       rg.group._baseScale ?? rg.group.scaleX(),
-    behaviorOverride: rAnchored ? 'stay' : (sceneDesc ? sceneDesc.right_behavior  : null),
-    motionHint:       rAnchored ? 'idle' : (sceneDesc ? sceneDesc.right_motion_hint : null),
+    bbox:             { x: W*0.75 - rg.w/2, y: H*0.5 - rg.h/2, width: rg.w, height: rg.h },
+    layerRef:         rg.group,
+    spawnScale:       rg.group._baseScale,
+    behaviorOverride: rAnchored ? 'stay' : (sceneDesc?.right_behavior   ?? null),
+    motionHint:       rAnchored ? 'idle' : (sceneDesc?.right_motion_hint ?? null),
   });
 
-  if (sceneDesc && sceneDesc.narrative) {
-    var nb = document.createElement('div');
-    nb.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:rgba(20,10,40,0.75);color:#fff;padding:10px 22px;border-radius:22px;font-family:system-ui,sans-serif;font-size:14px;pointer-events:none;z-index:9999;opacity:0;transition:opacity 0.5s;max-width:60vw;text-align:center;';
-    nb.textContent = sceneDesc.narrative;
-    document.body.appendChild(nb);
-    requestAnimationFrame(function(){ nb.style.opacity = '1'; });
-    setTimeout(function(){ nb.style.opacity='0'; setTimeout(function(){ nb.remove(); },600); },5500);
+  // ── Bottom dock: narrative text above End button, never overlapping ───────────
+  // Build a single fixed container so both elements stack cleanly.
+  const existingDock = document.getElementById('bottom-dock');
+  if (existingDock) existingDock.remove();
+
+  const dock = document.createElement('div');
+  dock.id = 'bottom-dock';
+  dock.style.cssText = [
+    'position:fixed',
+    'bottom:28px',
+    'left:50%',
+    'transform:translateX(-50%)',
+    'display:flex',
+    'flex-direction:column',
+    'align-items:center',
+    'gap:12px',
+    'z-index:9001',
+    'pointer-events:none',
+  ].join(';');
+
+  if (sceneDesc?.narrative) {
+    const nb = document.createElement('div');
+    nb.id = 'scene-narrative';
+    nb.style.cssText = [
+      'background:rgba(20,10,40,0.82)',
+      'color:#fff',
+      'padding:11px 26px',
+      'border-radius:24px',
+      'font-family:system-ui,sans-serif',
+      'font-size:15px',
+      'pointer-events:none',
+      'max-width:65vw',
+      'text-align:center',
+      'line-height:1.5',
+      'letter-spacing:0.01em',
+      'opacity:0',
+      'transition:opacity 0.6s',
+    ].join(';');
+    nb.textContent = '💬 ' + sceneDesc.narrative;
+    dock.appendChild(nb);
+    requestAnimationFrame(() => { nb.style.opacity = '1'; });
   }
 
-  console.log('[SquiggleWiggle] "' + lR.label + '" x "' + rR.label + '" done');
-  setTimeout(function() { startInteractionEngine(); }, 800);
+  // Move the End button inside the dock so it sits below the narrative
+  const endBtnEl = document.getElementById('end-btn');
+  if (endBtnEl) {
+    // Reset the fixed positioning since it's now inside the dock flow
+    endBtnEl.style.position = 'relative';
+    endBtnEl.style.bottom   = 'auto';
+    endBtnEl.style.left     = 'auto';
+    endBtnEl.style.transform = 'none';
+    endBtnEl.style.pointerEvents = 'all';
+    dock.appendChild(endBtnEl);
+  }
+
+  document.body.appendChild(dock);
+
+  console.log(`[SquiggleWiggle] "${lR.label}" × "${rR.label}" — animation started`);
+
+  // Show the End button (it's now inside the dock)
+  const endBtnAnim = document.getElementById('end-btn');
+  if (endBtnAnim) endBtnAnim.classList.add('visible');
+
+  setTimeout(() => startInteractionEngine(), 800);
+}
+
+// ─── End / Thank-you screen ───────────────────────────────────────────────────
+const endBtn     = document.getElementById('end-btn');
+const tyScreen   = document.getElementById('thankyou-screen');
+const restartBtn = document.getElementById('restart-btn');
+
+if (endBtn && tyScreen) {
+  endBtn.addEventListener('click', () => {
+    tyScreen.classList.add('visible');
+    endBtn.classList.remove('visible');
+  });
+}
+
+if (restartBtn) {
+  restartBtn.addEventListener('click', () => {
+    window.location.reload();
+  });
 }

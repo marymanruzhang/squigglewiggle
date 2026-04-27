@@ -26,6 +26,18 @@ export class AnimationController {
     // Cancel any previous animation — including wander travel RAF loops
     agent.cancelIdle?.();
     this.stop(agent.id);
+
+    // Phase 1: Anchored objects never animate — lock them to spawn position.
+    if (agent.hasTag('anchored')) {
+      const home = agent.spawnPos || agent.originPos;
+      agent.adapter.setPosition(home.x, home.y);
+      agent.adapter.setRotation(0);
+      const base = agent.spawnScale ?? 1;
+      agent.adapter.setScaleXY(base, base);
+      agent.cancelIdle = () => {};  // no-op so callers can call it safely
+      return;
+    }
+
     const preset = getPreset(agent.defaultMotion);
     const cancel = preset(agent, { ...agent.motionParams });
     this._active.set(agent.id, cancel);

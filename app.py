@@ -489,13 +489,44 @@ def classify_sketch():
         "messages": [
             {
                 "role": "system",
-                "content": "You are an expert doodle recognizer. The image shows a whiteboard zone with:\n1. A hand-drawn cloud shape (the original visual prompt)\n2. Additional strokes drawn BY THE USER on top of or around the cloud\n\nYour task: identify what the COMPLETE drawing represents — what has the user transformed the cloud into?\nRespond with ONLY valid JSON in this exact format:\n{\"category\": \"<broad category e.g. animal, plant, vehicle, food, building, object>\", \"label\": \"<specific name e.g. daisy, school bus, hot air balloon>\", \"description\": \"<one sentence describing the complete drawing's key visual features, useful for animation>\"}\nIf the canvas shows only the cloud with no user additions, return: {\"category\": \"cloud\", \"label\": \"cloud\", \"description\": \"An unmodified cloud shape.\"}"
+                "content": (
+                    "You are an expert sketch recognizer for an animation engine.\n"
+                    "The image shows a hand-drawn sketch on a whiteboard background.\n"
+                    "Your task: identify what the drawing represents and map it to the correct animation category.\n\n"
+                    "CATEGORIES (pick exactly one):\n"
+                    "  land_animal     – any animal that walks on land (dog, cat, horse, camel, elephant, lion, bear, sheep, etc.)\n"
+                    "  flying_animal   – any animal that flies (bird, butterfly, bat, eagle, owl, parrot, flamingo, etc.)\n"
+                    "  aquatic_animal  – any animal that swims (fish, dolphin, whale, shark, octopus, crab, sea turtle, etc.)\n"
+                    "  insect          – small crawling/buzzing creatures (ant, bee, spider, scorpion, snail, frog, etc.)\n"
+                    "  mythical        – fantasy creatures (dragon, mermaid, angel, unicorn, phoenix, alien, flying saucer, etc.)\n"
+                    "  human_character – humans, faces, body parts in a character sense (person, face, yoga, mermaid person, etc.)\n"
+                    "  plant           – any plant life (flower, tree, cactus, bush, mushroom, grass, sunflower, palm tree, etc.)\n"
+                    "  celestial       – space/sky objects (sun, moon, star, planet, comet, saturn, galaxy, etc.)\n"
+                    "  weather         – weather phenomena (cloud, rain, lightning, tornado, rainbow, snowflake, hurricane, etc.)\n"
+                    "  nature_element  – natural loose elements (leaf, feather, rock, crystal, bubble, balloon, etc.)\n"
+                    "  food            – any food or drink (apple, pizza, hamburger, cake, donut, banana, ice cream, carrot, etc.)\n"
+                    "  vehicle_land    – wheeled/land vehicles (car, bus, truck, bicycle, motorcycle, skateboard, tractor, etc.)\n"
+                    "  vehicle_air     – flying vehicles (airplane, helicopter, hot air balloon, rocket, drone, etc.)\n"
+                    "  vehicle_water   – water vehicles (sailboat, submarine, ship, canoe, speedboat, etc.)\n"
+                    "  built_structure – buildings and large structures (house, castle, lighthouse, barn, windmill, church, etc.)\n"
+                    "  tool_object     – tools and utensils (hammer, scissors, knife, screwdriver, shovel, axe, fork, etc.)\n"
+                    "  instrument      – musical instruments (guitar, piano, drums, violin, trumpet, saxophone, etc.)\n"
+                    "  sports_object   – sports equipment (basketball, soccer ball, boomerang, tennis racquet, golf club, etc.)\n"
+                    "  clothing        – wearable items (t-shirt, hat, shoe, umbrella, sock, jacket, belt, etc.)\n"
+                    "  geometric       – shapes and abstract forms (circle, triangle, square, star, spiral, diamond, etc.)\n"
+                    "  electronic      – electronics and gadgets (phone, computer, TV, radio, camera, calculator, etc.)\n\n"
+                    "Respond with ONLY valid JSON (no markdown):\n"
+                    "{\"category\": \"<one of the 21 category IDs above>\", "
+                    "\"label\": \"<specific name of the object>\", "
+                    "\"description\": \"<one sentence describing key visual features for animation>\"}\n"
+                    "If ambiguous, pick the best-fit category. Never refuse."
+                )
             },
             {
                 "role": "user",
                 "content": [
-                    { "type": "text", "text": "What doodle is drawn on this whiteboard section?" },
-                    { "type": "image_url", "image_url": { "url": f"data:image/png;base64,{base64_img}", "detail": "low" } }
+                    { "type": "text", "text": "What is this sketch? Reply with JSON only." },
+                    { "type": "image_url", "image_url": { "url": f"data:image/png;base64,{base64_img}", "detail": "auto" } }
                 ]
             }
         ]
@@ -513,27 +544,82 @@ def classify_sketch():
 
     try:
         with urllib.request.urlopen(req) as response:
-            result = json.loads(response.read().decode())
-            content = result["choices"][0]["message"]["content"].strip()
+            result  = json.loads(response.read().decode())
+            message = result["choices"][0]["message"]
+            content = message.get("content")  # may be None on refusal
+
+            # GPT-4o may refuse with a "refusal" field and null content
+            if not content:
+                refusal = message.get("refusal") or "no description"
+                print(f"[classify-sketch] GPT refused: {refusal}")
+                # Fall through to Gemini fallback below
+                raise ValueError(f"GPT refusal: {refusal}")
+
             # Strip markdown code fences if present
-            cleaned = content.replace("```json", "").replace("```", "").strip()
-            
+            cleaned = content.strip().replace("```json", "").replace("```", "").strip()
+
             # Robust JSON extraction
-            import re
             json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
             if json_match:
                 cleaned = json_match.group(0)
-            
-            return jsonify(json.loads(cleaned))
+
+            parsed = json.loads(cleaned)
+            # Ensure all required fields present
+            parsed.setdefault("category", "object")
+            parsed.setdefault("label", parsed.get("category", "sketch"))
+            parsed.setdefault("description", "A hand-drawn sketch.")
+            return jsonify(parsed)
+
     except urllib.error.HTTPError as e:
         err_body = e.read().decode()
-        print(f"HTTPError calling OpenAI: {e.code} {e.reason} - {err_body}")
-        return jsonify({"error": f"HTTP {e.code}: {err_body}"}), 500
+        print(f"[classify-sketch] HTTPError: {e.code} {e.reason} — {err_body}")
+        # Fall through to Gemini fallback
+    except json.JSONDecodeError as e:
+        print(f"[classify-sketch] JSON parse error: {e}")
+        # Fall through to Gemini fallback
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"Error calling OpenAI: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"[classify-sketch] GPT error: {e}")
+        # Fall through to Gemini fallback
+
+    # ── Gemini fallback ────────────────────────────────────────────────────────
+    # Called whenever GPT fails, refuses, or returns unparseable JSON.
+    try:
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        if gemini_key and base64_img:
+            gemini_payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": "Identify this hand-drawn sketch. Reply ONLY with JSON: {\"category\": \"<broad category e.g. animal, plant, vehicle, food, object>\", \"label\": \"<specific name>\", \"description\": \"<one sentence>\"}. If unclear, best guess."},
+                        {"inline_data": {"mime_type": "image/png", "data": base64_img}}
+                    ]
+                }],
+                "generationConfig": {"maxOutputTokens": 200, "temperature": 0.3}
+            }
+            gem_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={gemini_key}"
+            gem_req = urllib.request.Request(
+                gem_url,
+                data=json.dumps(gemini_payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+            with urllib.request.urlopen(gem_req) as gem_resp:
+                gem_result  = json.loads(gem_resp.read().decode())
+                gem_content = gem_result["candidates"][0]["content"]["parts"][0]["text"].strip()
+                gem_cleaned = gem_content.replace("```json", "").replace("```", "").strip()
+                gm = re.search(r'\{.*\}', gem_cleaned, re.DOTALL)
+                if gm: gem_cleaned = gm.group(0)
+                gem_parsed = json.loads(gem_cleaned)
+                gem_parsed.setdefault("category", "object")
+                gem_parsed.setdefault("label",    gem_parsed.get("category", "sketch"))
+                gem_parsed.setdefault("description", "A hand-drawn sketch.")
+                print(f"[classify-sketch] Gemini fallback: {gem_parsed.get('label')}")
+                return jsonify(gem_parsed)
+    except Exception as gem_err:
+        print(f"[classify-sketch] Gemini fallback failed: {gem_err}")
+
+    # ── Last-resort graceful default ───────────────────────────────────────────
+    return jsonify({"category": "object", "label": "sketch", "description": "An unrecognized hand-drawn sketch."}), 200
+
 
 
 # ── /api/detect-parts ──────────────────────────────────────────────────────────
@@ -876,6 +962,208 @@ Critical examples (memorize these):
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# ── /api/live-story ───────────────────────────────────────────────────────────
+# Phase 2: Semantic interaction engine.
+# Returns both GPT narrative metadata AND a beat specification so the frontend
+# can drive interactions using the existing storyRunner beat system.
+@app.route("/api/live-story", methods=["POST"])
+def live_story():
+    data       = request.get_json(silent=True) or {}
+    label_a    = data.get("label_a",    "unknown")
+    category_a = data.get("category_a", "")
+    tags_a     = data.get("tags_a",     [])
+    label_b    = data.get("label_b",    "unknown")
+    category_b = data.get("category_b", "")
+    tags_b     = data.get("tags_b",     [])
+
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        return jsonify({"error": "No API key"}), 500
+
+    prompt = f"""Two hand-drawn sketches will animate together on a shared canvas.
+Sketch A: "{label_a}"  category="{category_a}"  tags={tags_a}
+Sketch B: "{label_b}"  category="{category_b}"  tags={tags_b}
+
+Describe a brief, charming, semantically meaningful interaction between them.
+Return ONLY valid JSON (no extra text, no markdown):
+{{
+  "narrative": "one vivid sentence describing what happens",
+  "interaction_type": "one of: greet|chase|avoid|shelter|admire|play|coexist",
+  "behavior_a": "one of: approach|stay|flee|orbit|wander",
+  "behavior_b": "one of: approach|stay|flee|orbit|wander",
+  "motion_hint_a": "one of: walk|fly|swim|bounce|sway|idle",
+  "motion_hint_b": "one of: walk|fly|swim|bounce|sway|idle",
+  "tags_inferred": ["optional", "extra", "semantic", "tags"]
+}}
+
+Rules:
+- Anchored/terrain objects (mountain, house, rock, tree) ALWAYS have behavior "stay"
+- Mobile animals interact based on their real-world ecological relationship
+- "tags_inferred" should list any new semantic tags implied by this pair
+
+Examples:
+  bee + flower     -> behavior_a=orbit, behavior_b=stay, interaction_type=admire
+  dog + cat        -> behavior_a=approach, behavior_b=flee, interaction_type=chase
+  sheep + mountain -> behavior_a=approach, behavior_b=stay, interaction_type=coexist
+  fish + shark     -> behavior_a=flee, behavior_b=chase, interaction_type=chase"""
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 350,
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {openai_key}"},
+        method="POST"
+    )
+    try:
+        with urllib.request.urlopen(req) as response:
+            result  = json.loads(response.read().decode())
+            content = result["choices"][0]["message"]["content"].strip()
+            cleaned = content.replace("```json", "").replace("```", "").strip()
+            m = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if m: cleaned = m.group(0)
+            parsed = json.loads(cleaned)
+            print(f"[live-story] {label_a} <-> {label_b}: {parsed.get('narrative','')}")
+            return jsonify(parsed)
+    except urllib.error.HTTPError as e:
+        return jsonify({"error": f"HTTP {e.code}: {e.read().decode()}"}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+# ── /api/sketch-color ─────────────────────────────────────────────────────────
+# Returns the ideal fill color for a hand-drawn sketch of <label>.
+# Uses GPT-4o-mini for fast, cheap inference. Server-side cache prevents
+# redundant calls — each label is looked up at most once per server session.
+_color_cache: dict = {}
+
+@app.route("/api/sketch-color", methods=["POST"])
+def sketch_color():
+    data  = request.get_json(silent=True) or {}
+    label = (data.get("label") or "object").strip().lower()
+
+    # Serve from cache
+    if label in _color_cache:
+        return jsonify(_color_cache[label])
+
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        return jsonify({"r": 220, "g": 210, "b": 195, "a": 150})
+
+    prompt = (
+        f'A child has drawn a sketch of a "{label}" on paper.\n'
+        f'What bright, saturated fill color should the interior of this sketch have?\n'
+        f'Return ONLY valid JSON with keys r, g, b (integers 0-255) and a (integer 140-200).\n'
+        f'Choose a color that feels vivid and natural for the object.\n'
+        f'Examples:\n'
+        f'  "pumpkin"       -> {{"r":235,"g":120,"b":40,"a":180}}\n'
+        f'  "ocean"         -> {{"r":60,"g":140,"b":220,"a":170}}\n'
+        f'  "flamingo"      -> {{"r":255,"g":150,"b":190,"a":175}}\n'
+        f'  "jack-o-lantern"-> {{"r":240,"g":110,"b":30,"a":180}}\n'
+        f'  "handbag"       -> {{"r":180,"g":120,"b":90,"a":170}}\n'
+        f'  "banana"        -> {{"r":255,"g":230,"b":60,"a":180}}'
+    )
+
+    payload = {
+        "model": "gpt-4o-mini",
+        "max_tokens": 60,
+        "response_format": {"type": "json_object"},
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {openai_key}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=6) as resp:
+            raw     = json.loads(resp.read().decode())
+            content = raw["choices"][0]["message"]["content"].strip()
+            color   = json.loads(content)
+            # Clamp values to safe ranges
+            result = {
+                "r": max(0, min(255, int(color.get("r", 220)))),
+                "g": max(0, min(255, int(color.get("g", 210)))),
+                "b": max(0, min(255, int(color.get("b", 195)))),
+                "a": max(120, min(220, int(color.get("a", 165)))),
+            }
+            _color_cache[label] = result
+            print(f"[sketch-color] \"{label}\" → rgb({result['r']},{result['g']},{result['b']},{result['a']})")
+            return jsonify(result)
+    except Exception as e:
+        print(f"[sketch-color] fallback for \"{label}\": {e}")
+        fallback = {"r": 220, "g": 210, "b": 195, "a": 150}
+        _color_cache[label] = fallback
+        return jsonify(fallback)
+
+
+# ── /api/animated-drawings ────────────────────────────────────────────────────
+# Phase 3: Meta AnimatedDrawings integration for 4-limbed characters.
+# Takes { image: base64, label: str, joints: dict, motion: str }
+# Returns { frames: [base64_png, ...], isSkeletal: bool }
+# Falls back to existing PIL skeletal walk if AnimatedDrawings is unavailable.
+
+_AD_CAPABLE_LABELS = {
+    "human", "person", "man", "woman", "stick figure", "boy", "girl",
+    "dog", "cat", "horse", "cow", "sheep", "rabbit", "elephant", "bear",
+    "lion", "tiger", "giraffe", "fox", "deer", "pig", "frog", "lizard",
+    "turtle", "tortoise", "kangaroo", "wolf", "mouse",
+}
+
+@app.route("/api/animated-drawings", methods=["POST"])
+def animated_drawings_endpoint():
+    data       = request.get_json(silent=True) or {}
+    image_data = data.get("image", "")
+    label      = data.get("label",  "dog").lower()
+    joints     = data.get("joints", {})
+    motion     = data.get("motion", "walk")
+
+    if not image_data:
+        return jsonify({"error": "No image provided"}), 400
+
+    if label not in _AD_CAPABLE_LABELS:
+        return jsonify({"isSkeletal": False, "frames": []}), 200
+
+    if 'base64,' in image_data:
+        image_data = image_data.split('base64,')[1]
+
+    img = Image.open(io.BytesIO(base64.b64decode(image_data))).convert("RGBA")
+
+    # Try Meta AnimatedDrawings pipeline first
+    try:
+        from animation_engine.animated_drawings_bridge import generate_ad_frames
+        frames = generate_ad_frames(img, label, joints, motion)
+        b64_frames = []
+        for f in frames:
+            buf = io.BytesIO()
+            f.save(buf, format="PNG")
+            b64_frames.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
+        return jsonify({"isSkeletal": True, "frames": b64_frames})
+    except Exception as e:
+        print(f"[animated-drawings] AD fallback: {e}")
+
+    # Fallback: existing skeletal walk
+    try:
+        from animation_engine.skeletal import generate_skeletal_frames
+        frames = generate_skeletal_frames(img.convert("RGB"))
+        b64_frames = []
+        for f in frames:
+            buf = io.BytesIO()
+            f.save(buf, format="PNG")
+            b64_frames.append("data:image/png;base64," + base64.b64encode(buf.getvalue()).decode())
+        return jsonify({"isSkeletal": True, "frames": b64_frames})
+    except Exception as e2:
+        print(f"[animated-drawings] skeletal fallback failed: {e2}")
+        return jsonify({"isSkeletal": False, "frames": []}), 200
 
 
 if __name__ == "__main__":

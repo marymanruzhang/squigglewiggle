@@ -109,11 +109,23 @@ export async function runStory(plan, controller) {
 
   console.log(`[StoryRunner] ▶ ${plan.id}: "${source.label}" + "${target.label}"`);
 
+  // ── Dedicated draw loop ────────────────────────────────────────────────────
+  // Beat functions like ctrl.moveTo() and orbitAround() update Konva node
+  // positions but don't call layer.batchDraw(). If both agents' idle RAFs
+  // are stopped, nothing re-renders. This loop keeps drawing alive for the
+  // entire story duration.
+  const layer = source.adapter.ref?.getLayer?.() ?? target.adapter.ref?.getLayer?.();
+  let _drawRaf;
+  const _startDraw = () => {
+    const tick = () => { layer?.batchDraw(); _drawRaf = requestAnimationFrame(tick); };
+    _drawRaf = requestAnimationFrame(tick);
+  };
+  const _stopDraw = () => cancelAnimationFrame(_drawRaf);
+  _startDraw();
+
   try {
     const beats = template.beats;
 
-    // Walk beats in order.
-    // A beat with `parallel: true` is launched alongside the *previous* running beat.
     let pendingPromise = null;
 
     for (let i = 0; i < beats.length; i++) {
@@ -121,7 +133,6 @@ export async function runStory(plan, controller) {
 
       const beat = beats[i];
 
-      // Small inter-beat pause for readability (unless explicitly parallel)
       if (!beat.parallel && i > 0) {
         await wait(80);
         if (aborted) break;
@@ -130,36 +141,52 @@ export async function runStory(plan, controller) {
       const beatPromise = _executeBeat(beat, plan, controller);
 
       if (beat.parallel && pendingPromise) {
-        // Run this beat in parallel with the previous one
         pendingPromise = Promise.all([pendingPromise, beatPromise]);
       } else {
-        // Wait for any previously parallel group to finish first
         if (pendingPromise) await pendingPromise;
         pendingPromise = beatPromise;
       }
     }
 
-    // Await the final outstanding beat(s)
     if (pendingPromise) await pendingPromise;
 
   } catch (err) {
     console.warn(`[StoryRunner] Story "${plan.id}" encountered an error:`, err);
   } finally {
-    // Record cooldown and restore idle state
+    _stopDraw();
+
     recordCooldown(plan);
 
     _markIdle(source);
     _markIdle(target);
 
-    // Snap rotation/scale back so nothing is left in a weird state
     source.adapter.setRotation(0);
     target.adapter.setRotation(0);
 
-    // Restart idle animations
+    // ── Scale lock: always restore exact spawnScale after every story ─────────
+    // This is the safety net that guarantees consistent sizing regardless of
+    // what scale tweens the beat animations used.
+    for (const agent of [source, target]) {
+      const locked = agent.spawnScale ?? 1;
+      agent.adapter.setScale(locked);
+    }
+
+    // ── Out-of-bounds recovery ────────────────────────────────────────────────
+    for (const agent of [source, target]) {
+      const stage = agent.adapter.ref?.getStage?.();
+      if (stage) {
+        const sw = stage.width(), sh = stage.height();
+        const p  = agent.adapter.getPosition();
+        if (p.x < -40 || p.x > sw + 40 || p.y < -40 || p.y > sh + 40) {
+          agent.adapter.setPosition(sw / 2, sh / 2);
+          if (agent._wander) agent._wander.nextPickTime = 0;
+        }
+      }
+    }
+
     controller.startIdle(source);
     controller.startIdle(target);
 
-    // Reset wander timers so they pick new destinations naturally
     if (source._wander) source._wander.nextPickTime = Date.now() + 300;
     if (target._wander) target._wander.nextPickTime = Date.now() + 300;
 

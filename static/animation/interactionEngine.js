@@ -4,9 +4,10 @@
  * Wander manager + Story-aware interaction checker.
  *
  * Every `checkMs` (≈350ms) this engine:
- *   1. Gives mobile agents new wander waypoints.
- *   2. Asks storyPlanner for the best story plan among all agent pairs.
- *   3. Hands the plan to storyRunner, which executes the full beat sequence.
+ *   1. Gives mobile agents new wander waypoints (anchored objects are skipped).
+ *   2. Pre-fetches GPT semantic stories when pairs come within wanderRadius.
+ *   3. Asks storyPlanner for the best story plan among all agent pairs.
+ *   4. Hands the plan to storyRunner, which executes the full beat sequence.
  *
  * Only one story runs at a time (guarded by agent state checks in the planner).
  * Non-participating agents keep their idle animations running throughout.
@@ -16,7 +17,7 @@
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
-import { selectBestPlan } from './storyPlanner.js';
+import { selectBestPlan, fetchSemanticStory } from './storyPlanner.js';
 import { runStory, interrupt } from './storyRunner.js';
 
 export class InteractionEngine {
@@ -73,36 +74,45 @@ export class InteractionEngine {
   //     to physically drive the agent to a new position.
 
   static SELF_MOVING_PRESETS = new Set([
-    // Flying — move via oscillation around originPos
     'flutter', 'fly', 'zigzag_fly', 'hover', 'drift', 'wave', 'orbit',
-    // Aquatic — swim toward originPos with body wave
     'swim', 'slow_swim',
-    // Ground — walk/hop/prowl toward originPos with limb animation
-    'walk_bounce', 'slow_walk', 'hop', 'scurry', 'prowl', 'skeletal_walk',
   ]);
 
   _tickWander(agents) {
     const now = Date.now();
     const W = this.canvasW, H = this.canvasH;
+    const margin = 160;   // safe inset from canvas edge for all wander targets
 
     for (const agent of agents) {
       if (!agent.hasTag('mobile')) continue;
-      if (agent.behaviorOverride === 'stay') continue; // GPT-4o says this object stays put
+      if (agent.hasTag('anchored')) continue;
+      if (agent.behaviorOverride === 'stay') continue;
       if (agent.state !== 'idle') continue;
 
+      // ── Out-of-bounds rescue ──────────────────────────────────────────────
+      // If the agent escaped the canvas (e.g. from a flee beat), immediately
+      // redirect it back to the center so it walks back into view.
+      const curPos = agent.adapter.getPosition();
+      const oob = curPos.x < -50 || curPos.x > W + 50 ||
+                  curPos.y < -50 || curPos.y > H + 50;
+      if (oob) {
+        const rescueX = W / 2 + (Math.random() - 0.5) * 100;
+        const rescueY = H / 2 + (Math.random() - 0.5) * 100;
+        if (!agent._wander) agent._wander = {};
+        Object.assign(agent._wander, { tx: rescueX, ty: rescueY, nextPickTime: 0, headingToPartner: false });
+      }
+
       if (!agent._wander) {
-        // On first wander tick: immediately target the partner agent's position
-        // so they walk straight toward each other rather than wandering randomly.
         const partner = agents.find(a => a.id !== agent.id);
         const partnerCenter = partner ? partner.getCenter() : null;
 
         const FLYING = new Set(['flutter','fly','zigzag_fly','hover','orbit']);
         const initDelay = FLYING.has(agent.defaultMotion)
-          ? 1500 + Math.random() * 1000   // flying: settle briefly then head toward partner
-          : 200  + Math.random() * 300;   // ground: start walking almost immediately
+          ? 1500 + Math.random() * 1000
+          : 200  + Math.random() * 300;
 
-        const tx = partnerCenter ? partnerCenter.x : agent.originPos.x;
-        const ty = partnerCenter ? partnerCenter.y : agent.originPos.y;
+        const tx = partnerCenter ? Math.max(margin, Math.min(W - margin, partnerCenter.x)) : agent.originPos.x;
+        const ty = partnerCenter ? Math.max(margin, Math.min(H - margin, partnerCenter.y)) : agent.originPos.y;
         agent._wander = { nextPickTime: now + initDelay, tx, ty, headingToPartner: true };
       }
 
@@ -110,42 +120,37 @@ export class InteractionEngine {
       if (now < w.nextPickTime) continue;
 
       const isSelfMoving = InteractionEngine.SELF_MOVING_PRESETS.has(agent.defaultMotion);
-      const margin = 90;
 
       if (isSelfMoving) {
-        // ── Self-moving: just update originPos, preset drifts to it ────────
         if (w.headingToPartner) {
-          // First time: head toward partner
           const partner = agents.find(a => a.id !== agent.id);
           if (partner) {
             const pc = partner.getCenter();
-            w.tx = pc.x; w.ty = pc.y;
+            w.tx = Math.max(margin, Math.min(W - margin, pc.x));
+            w.ty = Math.max(margin, Math.min(H - margin, pc.y));
             w.headingToPartner = false;
           }
         } else {
           w.tx = margin + Math.random() * (W - margin * 2);
           w.ty = margin + Math.random() * (H - margin * 2);
         }
-        // Drift slowly — set nextPickTime after a travel period
         const dist = Math.hypot(w.tx - agent.originPos.x, w.ty - agent.originPos.y);
         w.nextPickTime = now + Math.max(2000, dist * 15) + Math.random() * 1500;
-        // Update originPos — the idle preset (flutter/fly/swim) will follow
         agent.originPos = { x: w.tx, y: w.ty };
 
       } else {
-        // ── Ground agent: drive via _wanderMoveTo RAF ───────────────────────
+        // ── Ground agent: drive via _wanderMoveTo RAF ─────────────────────
         if (w.headingToPartner) {
-          // Head toward partner on first move
           const partner = agents.find(a => a.id !== agent.id);
           if (partner) {
             const pc = partner.getCenter();
-            // Stop 120px short so they face each other without overlapping
             const selfPos = agent.adapter.getPosition();
             const dx = pc.x - selfPos.x, dy = pc.y - selfPos.y;
-            const d  = Math.hypot(dx, dy);
+            const d  = Math.hypot(dx, dy) || 1;
             const stopDist = Math.max(80, d - 120);
-            w.tx = selfPos.x + (dx / d) * stopDist;
-            w.ty = selfPos.y + (dy / d) * stopDist;
+            // Clamp stop position inside canvas
+            w.tx = Math.max(margin, Math.min(W - margin, selfPos.x + (dx / d) * stopDist));
+            w.ty = Math.max(margin, Math.min(H - margin, selfPos.y + (dy / d) * stopDist));
           }
           w.headingToPartner = false;
         } else {
@@ -168,9 +173,9 @@ export class InteractionEngine {
             this.controller.startIdle(agent);
           }
         });
-      }
-    }
-  }
+      }  // closes else
+    }  // closes for loop
+  }  // closes _tickWander
 
 
   /** rAF-based constant-speed move for wander travel. */
@@ -207,8 +212,12 @@ export class InteractionEngine {
           agent.adapter.setPosition(nx, ny);
           agent.adapter.setRotation(dx > 0 ? 5 : -5);
         } else {
-          const bounce = 7 * Math.abs(Math.sin(phase * Math.PI * 2.5));
-          agent.adapter.setPosition(nx, ty - bounce);
+          // Incrementally move toward (tx,ty) in both axes.
+          // The bob is applied as a Y offset on top of the correct path position
+          // (not snapped to target Y) so diagonal walks look natural.
+          const ny = pos.y + (dy / dist) * step;
+          const bounce = 5 * Math.abs(Math.sin(phase * Math.PI * 2.5));
+          agent.adapter.setPosition(nx, ny - bounce);
           agent.adapter.setRotation(dx > 0 ? 4 : -4);
         }
 
@@ -273,11 +282,33 @@ export class InteractionEngine {
   }
 
 
+  // ── Semantic pre-fetch on proximity (Phase 2) ────────────────────────────
+  //
+  // When two agents come within wanderRadius of each other for the first time,
+  // fire-and-forget a GPT live-story request. The result lands in the
+  // storyPlanner's cache so by the time they actually meet, it's ready.
+
+  _prefetchSemanticStories(agents) {
+    for (let i = 0; i < agents.length; i++) {
+      for (let j = i + 1; j < agents.length; j++) {
+        const a = agents[i], b = agents[j];
+        if (a.state !== 'idle' || b.state !== 'idle') continue;
+        const dist = this._dist(a.getCenter(), b.getCenter());
+        if (dist > this.wanderRadius * 1.5) continue;
+        // fetchSemanticStory is a no-op if the pair is already cached
+        fetchSemanticStory(a, b).catch(() => {});
+      }
+    }
+  }
+
   // ── Story selection and dispatch ───────────────────────────────────────────
 
   _tickStory(agents) {
     // Don't stack stories — wait for the current one to finish
     if (this._storyRunning) return;
+
+    // Pre-fetch semantic stories for pairs coming within range
+    this._prefetchSemanticStories(agents);
 
     // Let wandering agents drift toward possible partners first
     this._nudgeTowardPartners(agents);

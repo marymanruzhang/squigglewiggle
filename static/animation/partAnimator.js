@@ -14,6 +14,8 @@ const SEMANTIC_SCALE = {
   // Large animals
   elephant:2.0, whale:2.2, horse:1.6, cow:1.5, bear:1.8,
   lion:1.5, tiger:1.5, dinosaur:2.2, crocodile:1.6, hippo:1.8,
+  camel:1.7, giraffe:2.4, rhino:1.9, rhinoceros:1.9, buffalo:1.8,
+  bison:1.8, moose:1.9, elk:1.7, yak:1.6, zebra:1.5,
   // Medium animals / people
   dog:1.0, cat:1.0, human:1.2, person:1.2, girl:1.2, boy:1.2,
   sheep:0.9, deer:1.3, fox:0.9, pig:0.9, wolf:1.2,
@@ -39,6 +41,9 @@ export function getSemanticScale(label) {
   return SEMANTIC_SCALE[(label||'').toLowerCase()] ?? 1.0;
 }
 
+/** Set of all labels present in the hand-calibrated semantic scale table. */
+export const SEMANTIC_SCALE_KNOWN = new Set(Object.keys(SEMANTIC_SCALE));
+
 // ─── Backend part hints (optional) ────────────────────────────────────────────
 export async function detectParts(imageDataURL, label) {
   try {
@@ -59,17 +64,61 @@ export async function detectParts(imageDataURL, label) {
 // ─── Main builder ─────────────────────────────────────────────────────────────
 // overrideScale: if provided, uses this instead of SEMANTIC_SCALE lookup.
 // Returns { group, w, h, naturalW, naturalH, stop }
-export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer, category, label, overrideScale) {
+export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer, category, label, overrideScale, fillColor) {
   return new Promise(async resolve => {
-    const filled = applyFillAndStrip(sourceCanvas, label);
+    const filled = applyFillAndStrip(sourceCanvas, label, fillColor);
     if (!filled) { resolve(null); return; }
     const { canvas: src, cropW: W, cropH: H } = filled;
 
     const cat = (category || '').toLowerCase();
     const lbl = (label    || '').toLowerCase();
 
+    // ── Static / anchored objects — no animation whatsoever ───────────────────
+    // Built structures and landscape elements must never bounce, rotate, or sway.
+    // Celestial bodies are also static here — their gentle motion (slow rock/spin)
+    // is driven by the motion-preset system after spawning, not by a local RAF.
+    const isStatic = [
+      // Built structures
+      'house','home','building','castle','barn','shed','cabin','cottage','bungalow',
+      'skyscraper','tower','church','temple','mosque','lighthouse','windmill',
+      'tent','igloo','hut','treehouse','mansion','villa','palace',
+      // Landscape
+      'mountain','volcano','cliff','rock','boulder','island','hill',
+      'bridge','fence','wall','gate','arch','pillar','statue',
+      'road','path','sidewalk','street',
+      // Celestial / space (gentle motion from motion preset, not internal RAF)
+      'planet','saturn','earth','globe','moon','sun','comet','asteroid',
+      'meteor','star','nebula','galaxy','space','universe',
+    ].includes(lbl) || cat === 'built_object' || cat === 'landscape' || cat === 'celestial';
+
+    if (isStatic) {
+      const group = new Konva.Group({ x: cx, y: cy, id: agentId });
+      const kImg  = new Konva.Image({
+        image: src, x: 0, y: 0, width: W, height: H,
+      });
+      group.add(kImg);
+      group.offsetX(W / 2);
+      group.offsetY(H / 2);
+      const scale = overrideScale !== undefined ? overrideScale : getSemanticScale(lbl);
+      group.scaleX(scale);
+      group.scaleY(scale);
+      konvaLayer.add(group);
+      konvaLayer.draw();
+      // No RAF started — completely inert
+      group._stopPartAnimations = () => {};
+      resolve({ group, w: W * scale, h: H * scale, naturalW: W, naturalH: H,
+                stop: group._stopPartAnimations });
+      return;
+    }
+
     const isFlying  = cat === 'flying_animal'  || ['butterfly','bird','bee','moth','bat','dragonfly'].includes(lbl);
-    const isGround  = cat === 'ground_animal'  || ['dog','cat','rabbit','sheep','horse','cow','turtle','tortoise','fox','deer','frog','lizard','pig','wolf','bear','lion','tiger','elephant'].includes(lbl);
+    const isGround  = cat === 'ground_animal'  || [
+      'dog','cat','rabbit','sheep','horse','cow','turtle','tortoise','fox',
+      'deer','frog','lizard','pig','wolf','bear','lion','tiger','elephant',
+      'camel','donkey','goat','llama','zebra','rhino','rhinoceros','hippo',
+      'ox','buffalo','giraffe','moose','reindeer','hyena','cheetah','leopard',
+      'panther','jaguar','puma','cougar','coyote','boar','bison','yak',
+    ].includes(lbl);
     const isHuman   = cat === 'human_character'|| ['human','person','girl','boy'].includes(lbl);
     const isPlant   = cat === 'plant'          || ['flower','tree','grass','bush','cactus','sunflower','rose'].includes(lbl);
     const isSwim    = cat === 'water_creature' || ['fish','whale','shark','octopus','jellyfish','crab'].includes(lbl);
@@ -104,7 +153,11 @@ export function buildPartGroup(sourceCanvas, _parts, cx, cy, agentId, konvaLayer
       buildPlant(src, W, H, group, konvaLayer, rafIds);
     } else if (isSwim) {
       buildSwimmer(src, W, H, group, konvaLayer, rafIds);
+    } else if (isGround) {
+      // Quadruped: detect individual legs and animate with diagonal trot gait
+      buildQuadrupedWalk(src, W, H, group, konvaLayer, rafIds);
     } else {
+      // Biped / unknown fallback
       buildWholeBodyBounce(src, W, H, group, konvaLayer, rafIds, isHuman);
     }
 
@@ -161,6 +214,40 @@ function buildWholeBodyBounce(src, W, H, group, layer, rafIds, isBiped) {
     kImg.y(H/2 - Math.abs(Math.sin(t * 2)) * 5);
     // Slight lean into direction of travel
     kImg.rotation(Math.sin(t) * 2.5);
+    layer.batchDraw();
+  });
+}
+
+// ─── Quadruped walk: whole-body walk cycle ────────────────────────────────────
+//
+// We render the sketch as a single, uncut image.
+// Splitting the image into body + leg slabs creates visible seams and gaps
+// whenever the pieces animate independently — this was the root cause of the
+// "body and legs separating" bug.
+//
+// Instead we convey walking through two simultaneous motions applied to the
+// whole image:
+//   1. Vertical bob  — 2 rises per stride (one per diagonal step pair)
+//   2. Lateral lean  — gentle ±LEAN_DEG tilt, synced to the stride
+//
+// Combined with the lateral translation from _wanderMoveTo, the animal looks
+// convincingly like it's walking across the canvas.
+//
+function buildQuadrupedWalk(src, W, H, group, layer, rafIds) {
+  const kImg = makeKImg(clipCanvas(src, 0, 0, W, H),
+    { x: W/2, y: H/2, offX: W/2, offY: H/2 });
+  group.add(kImg);
+
+  const WALK_FREQ = 0.9;   // strides per second (≈ natural quadruped pace)
+  const BOB_PX    = 4;     // vertical rise per step (px, before scale)
+  const LEAN_DEG  = 4;     // left/right lean amplitude (degrees)
+
+  animRAF(rafIds, (phase) => {
+    const t = phase * WALK_FREQ * Math.PI * 2;
+    // Two bobs per stride — one for each diagonal pair of legs
+    kImg.y(H/2 - Math.abs(Math.sin(t * 2)) * BOB_PX);
+    // Lean: smoothly alternates left/right with each stride
+    kImg.rotation(Math.sin(t) * LEAN_DEG);
     layer.batchDraw();
   });
 }
@@ -236,28 +323,68 @@ function animRAF(rafIds, fn) {
 
 // ─── Interior flood-fill + exterior strip ─────────────────────────────────────
 const FILL_COLORS = {
-  butterfly:[180,140,220,140], moth:[160,130,200,130], bee:[255,210,80,130],
-  bird:[255,210,120,130], parrot:[100,200,140,130], bat:[100,90,130,120],
-  dragonfly:[100,180,230,130], owl:[200,180,140,120],
-  fish:[100,180,230,130], whale:[80,160,210,120], shark:[140,160,190,120],
-  octopus:[190,130,200,120], jellyfish:[200,170,230,120], crab:[220,130,100,120],
-  flower:[255,170,190,130], sunflower:[255,220,80,130], rose:[240,120,140,130],
-  tree:[130,200,130,120], grass:[140,210,140,110], bush:[120,190,110,120],
-  cactus:[100,180,100,120],
-  cat:[230,190,150,120], dog:[220,185,145,120], rabbit:[230,215,205,120],
-  sheep:[220,220,215,120], horse:[200,175,145,120], cow:[220,210,190,120],
-  fox:[230,160,100,120], deer:[210,180,140,120], bear:[160,130,100,120],
-  turtle:[160,200,140,120], tortoise:[170,200,140,120], frog:[120,200,120,130],
-  lizard:[140,200,120,120],
-  human:[240,210,190,120], person:[240,210,190,120], girl:[250,200,210,120], boy:[200,220,240,120],
-  elephant:[180,180,190,120], lion:[240,200,140,120], tiger:[240,180,100,120],
-  sun:[255,230,100,130], cloud:[210,225,240,120], star:[255,240,150,130],
-  moon:[220,220,180,120], rainbow:[200,230,255,120],
-  car:[160,190,230,120], house:[210,190,170,120], cake:[255,210,180,130],
-  mountain:[180,190,200,110], rock:[190,185,175,110],
+  // ── Insects / small flying ────────────────────────────────────────────────
+  butterfly:[180,140,220,160], moth:[160,130,200,150], bee:[255,210,60,160],
+  bird:[120,190,255,150], parrot:[80,200,120,160], bat:[100,80,130,150],
+  dragonfly:[80,200,230,150], owl:[200,175,130,150],
+  // ── Aquatic ───────────────────────────────────────────────────────────────
+  fish:[80,190,240,150], whale:[70,150,200,140], shark:[130,155,185,140],
+  octopus:[200,130,200,140], jellyfish:[210,170,235,140], crab:[225,110,90,150],
+  starfish:[255,160,100,150], seahorse:[255,180,100,150],
+  // ── Plants ────────────────────────────────────────────────────────────────
+  flower:[255,160,195,160], sunflower:[255,220,60,160], rose:[245,110,140,160],
+  tree:[100,190,110,150], grass:[130,210,120,140], bush:[110,185,100,150],
+  cactus:[90,175,90,150], 'house plant':[110,200,120,150],
+  // ── Common pets ──────────────────────────────────────────────────────────
+  cat:[230,190,145,155], dog:[215,180,135,155], rabbit:[230,215,205,155],
+  hamster:[230,200,160,150], guinea:[215,195,160,150],
+  // ── Farm / herbivores ─────────────────────────────────────────────────────
+  sheep:[215,215,210,155], cow:[220,205,185,155], horse:[195,165,130,155],
+  pig:[255,185,185,155], goat:[210,200,180,155], donkey:[185,175,165,155],
+  // ── Desert / exotic ──────────────────────────────────────────────────────
+  camel:[210,185,140,165], llama:[220,205,185,155], yak:[140,120,100,155],
+  zebra:[230,225,215,155], giraffe:[255,210,120,160],
+  // ── Large predators ──────────────────────────────────────────────────────
+  lion:[245,200,130,160], tiger:[245,165,85,160], bear:[155,120,90,155],
+  wolf:[180,175,165,150], fox:[235,155,90,155],
+  cheetah:[245,210,130,150], leopard:[240,200,130,150], jaguar:[205,170,110,150],
+  // ── Other large animals ───────────────────────────────────────────────────
+  elephant:[175,175,185,155], hippo:[155,155,165,150], rhino:[165,160,155,150],
+  rhinoceros:[165,160,155,150], crocodile:[110,175,110,150],
+  deer:[205,175,130,155], moose:[165,135,105,150], reindeer:[190,160,130,150],
+  kangaroo:[210,170,130,150],
+  // ── Reptiles / amphibians ─────────────────────────────────────────────────
+  turtle:[140,195,130,150], tortoise:[155,190,130,150], frog:[100,210,110,160],
+  lizard:[130,200,110,150], snake:[120,190,120,150],
+  // ── Birds ────────────────────────────────────────────────────────────────
+  duck:[255,230,100,155], penguin:[50,50,50,150], flamingo:[255,160,200,155],
+  eagle:[160,140,110,150], pigeon:[180,175,170,150],
+  // ── People ───────────────────────────────────────────────────────────────
+  human:[240,210,185,150], person:[240,210,185,150],
+  girl:[255,200,215,150], boy:[190,220,250,150],
+  man:[220,195,170,150], woman:[255,200,215,150],
+  // ── Celestial / weather ───────────────────────────────────────────────────
+  sun:[255,230,80,150], cloud:[205,225,245,140], star:[255,245,140,155],
+  moon:[225,220,175,145], rainbow:[200,235,255,140], lightning:[255,240,130,155],
+  planet:[90,120,230,185], saturn:[200,170,120,180], earth:[80,160,230,185],
+  globe:[80,160,230,185], comet:[160,200,255,170], asteroid:[175,165,155,160],
+  meteor:[200,140,100,165], nebula:[180,100,230,175], galaxy:[110,80,200,175],
+  // ── Vehicles ─────────────────────────────────────────────────────────────
+  car:[150,190,235,150], bus:[255,210,80,150], truck:[180,200,165,150],
+  boat:[100,175,235,150], airplane:[200,215,235,150],
+  // ── Structures ────────────────────────────────────────────────────────────
+  house:[215,195,170,145], castle:[190,185,185,145], barn:[200,130,100,145],
+  bridge:[180,185,190,140], tent:[215,200,170,140],
+  // ── Nature / landscape ────────────────────────────────────────────────────
+  mountain:[180,190,205,130], volcano:[210,150,100,140], rock:[185,180,170,130],
+  island:[140,210,160,140], hill:[160,200,140,130], cliff:[175,170,160,130],
+  // ── Food / misc ──────────────────────────────────────────────────────────
+  cake:[255,210,185,155], pizza:[255,200,130,155], apple:[220,80,80,160],
+  heart:[255,100,130,165], acorn:[180,140,90,160], mushroom:[200,100,80,155],
+  pumpkin:[235,145,60,160], banana:[255,235,80,160], strawberry:[230,80,100,160],
 };
 
-function applyFillAndStrip(src, label) {
+function applyFillAndStrip(src, label, fillColor) {
   const sctx = src.getContext('2d');
   const SW = src.width, SH = src.height;
   const raw = sctx.getImageData(0, 0, SW, SH).data;
@@ -288,9 +415,10 @@ function applyFillAndStrip(src, label) {
     mask[i]=((px[ii]+px[ii+1]+px[ii+2])/3<180 && px[ii+3]>60)?1:0;
   }
 
-  // Dilate 2px
+  // Dilate 4px — thicker barrier closes ring intersections and other complex
+  // outlines so the BFS exterior flood-fill can't leak through gaps.
   const dil=new Uint8Array(mask);
-  for(let p=0;p<2;p++){
+  for(let p=0;p<4;p++){
     const prev=new Uint8Array(dil);
     for(let y=1;y<CH-1;y++) for(let x=1;x<CW-1;x++) if(prev[y*CW+x]){
       dil[(y-1)*CW+x]=1; dil[(y+1)*CW+x]=1;
@@ -312,7 +440,8 @@ function applyFillAndStrip(src, label) {
   }
 
   // Paint
-  const fc=FILL_COLORS[(label||'').toLowerCase()]||[230,220,210,120];
+  // Paint — use AI-provided color if available, else FILL_COLORS table, else default
+  const fc = fillColor || FILL_COLORS[(label||'').toLowerCase()] || [220,210,195,150];
   for(let i=0;i<CW*CH;i++){
     const ii=i*4;
     if(out[i]&&!mask[i]){ px[ii+3]=0; }

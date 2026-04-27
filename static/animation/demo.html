@@ -128,6 +128,33 @@ header {
 @keyframes pulseState {
   0%,100% { opacity: 1; } 50% { opacity: 0.6; }
 }
+/* Phase 4: tag chips below badge */
+.badge-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  justify-content: center;
+  max-width: 120px;
+}
+.tag-chip {
+  font-size: 7px;
+  background: rgba(167,139,250,0.15);
+  border: 1px solid rgba(167,139,250,0.3);
+  color: #a78bfa;
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 1.5;
+}
+/* Phase 4: GPT narrative in story bar */
+.story-narrative {
+  font-style: italic;
+  color: #c4b5fd;
+  font-size: 0.71rem;
+  max-width: 480px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ── Sidebar ─────────────────────────────────────────────────────── */
 .sidebar {
@@ -317,19 +344,28 @@ window.addEventListener('unhandledrejection', e =>
 window.addEventListener('error', e => addLog('❌ ' + e.message, 'err'));
 
 // ── Story bar update ──────────────────────────────────────────────────────────
-// Patch console.log to detect story start/end/beat events
 const storyBar = document.getElementById('storyBar');
 let currentStoryBeats = [];
 let storyBarActive = false;
 
+// Phase 4: track last GPT narrative for display
+let _lastNarrative = '';
+
 function setStoryBarIdle() {
   storyBarActive = false;
-  storyBar.innerHTML = '<span class="story-idle">Waiting for objects to interact…</span>';
+  storyBar.innerHTML = _lastNarrative
+    ? `<span class="story-idle">💭 ${_lastNarrative}</span>`
+    : '<span class="story-idle">Waiting for objects to interact…</span>';
 }
 
 function setStoryBarPlaying(storyId, sourceName, targetName, beats) {
   storyBarActive = true;
   currentStoryBeats = beats || [];
+
+  // Clean up live story IDs for display
+  const displayId = storyId.startsWith('live__')
+    ? '🤖 AI story'
+    : storyId;
 
   const beatChips = currentStoryBeats.map((b, i) =>
     `<span class="beat-chip" id="chip_${i}">${b}</span>`
@@ -338,7 +374,8 @@ function setStoryBarPlaying(storyId, sourceName, targetName, beats) {
   storyBar.innerHTML = `
     <div class="story-playing">
       <span class="story-pair">${sourceName} ↔ ${targetName}</span>
-      <span class="story-label">${storyId}</span>
+      <span class="story-label">${displayId}</span>
+      ${_lastNarrative ? `<span class="story-narrative">"${_lastNarrative}"</span>` : ''}
       ${beatChips}
     </div>`;
 }
@@ -352,20 +389,31 @@ function advanceStoryBarBeat(beatIndex) {
   });
 }
 
-// Intercept storyRunner logs to drive the story bar
+// Intercept storyRunner + storyPlanner logs to drive the story bar
 const _origLogOrig = _origLog;
 const storyLogInterceptor = (...a) => {
   const m = a.join(' ');
+
+  // Phase 4: capture GPT narrative from [StoryPlanner] 🤖 log
+  if (m.includes('[StoryPlanner]') && m.includes('🤖')) {
+    // Format: "[StoryPlanner] 🤖 "dog" + "cat": The dog chases the cat…"
+    const narMatch = m.match(/:\s+(.+)$/);
+    if (narMatch) {
+      _lastNarrative = narMatch[1].trim();
+      // Update story bar if idle
+      if (!storyBarActive) setStoryBarIdle();
+    }
+  }
+
   if (m.includes('[StoryRunner] ▶')) {
     // "▶ dog_cake: "dog" + "cake""
     const match = m.match(/▶ (\S+): "(.+?)" \+ "(.+?)"/);
     if (match) {
       const [_, id, src, tgt] = match;
-      // Extract beat names from templates (we read them dynamically below)
       setStoryBarPlaying(id, src, tgt, getBeatsForStory(id));
     }
   } else if (m.includes('[StoryRunner] ✓')) {
-    setTimeout(setStoryBarIdle, 800);
+    setTimeout(setStoryBarIdle, 1200);
   }
 };
 
@@ -374,10 +422,13 @@ const __origLog = console.log;
 console.log = (...a) => { __origLog(...a); storyLogInterceptor(...a); };
 
 // ── Story beat names lookup (for UI display) ──────────────────────────────────
-// We import storyTemplates to read beat names for the timeline
 import { STORY_TEMPLATES } from './storyTemplates.js';
 
 function getBeatsForStory(id) {
+  if (id.startsWith('live__')) {
+    // Live stories — display generic beat names from interaction type
+    return ['notice', 'approach', 'react', 'respond', 'return'];
+  }
   const t = STORY_TEMPLATES.find(t => t.id === id);
   if (!t) return [];
   return t.beats.map(b => b.type.replace(/([A-Z])/g, ' $1').trim().toLowerCase());
@@ -460,11 +511,21 @@ async function spawnObject(label, forcedX, forcedY) {
     updateBadgePos(id, gx, gy);
   });
 
-  // ── Agent state badge ──────────────────────────────────────────────
+  // ── Agent state badge with Phase 4 tag chips ───────────────────────
   const badge = document.createElement('div');
   badge.className = 'badge';
+
+  // Show first 4 semantic tags as chips (skip super-generic ones)
+  const displayTags = (agent.tags || [])
+    .filter(t => !['mobile', 'anchored'].includes(t))
+    .slice(0, 4);
+  const tagChipsHtml = displayTags.length
+    ? `<div class="badge-tags">${displayTags.map(t => `<span class="tag-chip">${t}</span>`).join('')}</div>`
+    : '';
+
   badge.innerHTML = `
     <div class="badge-label">${label}</div>
+    ${tagChipsHtml}
     <div class="badge-state idle" id="bstate_${id}">idle</div>`;
   stageEl.appendChild(badge);
   badges[id] = badge;

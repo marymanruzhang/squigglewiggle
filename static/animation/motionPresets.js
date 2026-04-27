@@ -96,16 +96,18 @@ export function wave(agent, params = {}) {
 
 export function sway_bloom(agent, params = {}) {
   const { amplitude = 8, speed = 0.5, bloomAmplitude = 0.07, bloomSpeed = 0.8 } = params;
+  const base   = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
     agent.adapter.setRotation(amplitude * Math.sin(2 * Math.PI * t * speed));
-    agent.adapter.setScale(1 + bloomAmplitude * Math.sin(2 * Math.PI * t * bloomSpeed));
+    // bloom oscillates around spawnScale, not around 1.0
+    agent.adapter.setScale(base * (1 + bloomAmplitude * Math.sin(2 * Math.PI * t * bloomSpeed)));
     agent.adapter.setPosition(origin.x, origin.y);
   });
 }
 
 export function subtle_wiggle(agent, params = {}) {
-  const { amplitude = 1.5, speed = 0.3 } = params;
+  const { amplitude = 0.5, speed = 0.3 } = params;  // reduced from 1.5 to stop visible shaking
   const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
     // Combine two sine waves for organic feel
@@ -368,9 +370,10 @@ export function slow_swim(agent, params = {}) {
 
 export function pulse_float(agent, params = {}) {
   const { pulseAmp = 0.12, floatHeight = 10, speed = 0.5 } = params;
+  const base   = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
-    agent.adapter.setScale(1 + pulseAmp * Math.sin(2 * Math.PI * t * speed));
+    agent.adapter.setScale(base * (1 + pulseAmp * Math.sin(2 * Math.PI * t * speed)));
     agent.adapter.setPosition(origin.x, origin.y + floatHeight * Math.sin(2 * Math.PI * t * speed * 0.6));
   });
 }
@@ -430,18 +433,20 @@ export function push(agent, params = {}) {
 
 export function pulse(agent, params = {}) {
   const { amplitude = 0.07, speed = 0.6 } = params;
+  const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   return oneshotOrLoop(agent, params, t => {
-    agent.adapter.setScale(1 + amplitude * Math.sin(2 * Math.PI * t * speed));
+    agent.adapter.setScale(base * (1 + amplitude * Math.sin(2 * Math.PI * t * speed)));
   });
 }
 
 export function twinkle(agent, params = {}) {
   const { opacityMin = 0.55, opacityMax = 1.0, speed = 1.1 } = params;
+  const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   return oneshotOrLoop(agent, params, t => {
     const v = (Math.sin(2 * Math.PI * t * speed) + Math.sin(2 * Math.PI * t * speed * 1.7)) / 2;
     const opacity = opacityMin + (opacityMax - opacityMin) * (v * 0.5 + 0.5);
     agent.adapter.setOpacity(opacity);
-    agent.adapter.setScale(1 + 0.04 * Math.sin(2 * Math.PI * t * speed * 1.3));
+    agent.adapter.setScale(base * (1 + 0.04 * Math.sin(2 * Math.PI * t * speed * 1.3)));
   });
 }
 
@@ -467,8 +472,9 @@ export function flow(agent, params = {}) {
 
 export function ripple(agent, params = {}) {
   const { amplitude = 0.06, speed = 0.5 } = params;
+  const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   return oneshotOrLoop(agent, params, t => {
-    const s = 1 + amplitude * Math.sin(2 * Math.PI * t * speed);
+    const s = base * (1 + amplitude * Math.sin(2 * Math.PI * t * speed));
     agent.adapter.setScale(s);
     agent.adapter.setOpacity(1 - 0.05 * Math.abs(Math.sin(2 * Math.PI * t * speed)));
   });
@@ -511,9 +517,11 @@ export function float(agent, params = {}) {
 
 export function open_close(agent, params = {}) {
   const { openScale = 1.08, speed = 0.35 } = params;
+  const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   return oneshotOrLoop(agent, params, t => {
     const s = 1 + (openScale - 1) * (0.5 + 0.5 * Math.sin(2 * Math.PI * t * speed));
-    agent.adapter.setScaleXY(s, 1 / s * 0.97 + 0.03);
+    // Multiply by base so the expand/contract is relative to spawnScale
+    agent.adapter.setScaleXY(base * s, base * (1 / s * 0.97 + 0.03));
   });
 }
 
@@ -526,13 +534,16 @@ export function tilt(agent, params = {}) {
 
 // ─── Abstract / fallback motions ─────────────────────────────────────────────
 
-export function static_motion(agent, params = {}) {
-  // Imperceptible slow breathe — scale relative to spawnScale so AI sizing is never lost
+export function static_motion(agent, _params = {}) {
+  // Completely inert — anchored objects must never oscillate.
+  // We simply ensure the object is positioned at its origin and return
+  // a no-op cancel function so the rest of the engine stays happy.
+  const pos = agent.originPos;
+  agent.adapter.setPosition(pos.x, pos.y);
+  agent.adapter.setRotation(0);
   const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
-  return oneshotOrLoop(agent, params, t => {
-    const s = base * (1 + 0.004 * Math.sin(2 * Math.PI * t * 0.12));
-    agent.adapter.setScaleXY(s, s);
-  });
+  agent.adapter.setScaleXY(base, base);
+  return () => {}; // no RAF started — nothing to cancel
 }
 
 export function rotate(agent, params = {}) {
@@ -544,9 +555,11 @@ export function rotate(agent, params = {}) {
 
 export function squish(agent, params = {}) {
   const { amplitude = 0.14, speed = 0.7 } = params;
+  const base = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
   return oneshotOrLoop(agent, params, t => {
     const s = 1 + amplitude * Math.sin(2 * Math.PI * t * speed);
-    agent.adapter.setScaleXY(1 / s, s);
+    // Multiply by base so the squish oscillates around spawnScale, not around 1.0
+    agent.adapter.setScaleXY(base / s, base * s);
   });
 }
 
