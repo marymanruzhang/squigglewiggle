@@ -431,6 +431,7 @@ async function analyzeZone(zone) {
 
       // Override the classify-supplied rotation_correction with the dedicated result
       result.rotation_correction = rot;
+      result.facing_direction    = orient?.facing_direction ?? 'neutral';
 
       console.log(
         `%c[orient] "${result.label}" rawRot=${rawRot}° conf=${conf} → applied=${rot}° — ${orient?.reasoning ?? ''}`,
@@ -1034,6 +1035,7 @@ async function transitionToAnimationStage() {
     bbox:             { x: W*0.25 - lg.w/2, y: H*0.5 - lg.h/2, width: lg.w, height: lg.h },
     layerRef:         lg.group,
     spawnScale:       lg.group._baseScale,
+    naturalFacing:    lR.facing_direction ?? 'neutral',
     behaviorOverride: lAnchored ? 'stay' : (sceneDesc?.left_behavior   ?? null),
     motionHint:       lAnchored ? 'idle' : (sceneDesc?.left_motion_hint ?? null),
   });
@@ -1043,9 +1045,31 @@ async function transitionToAnimationStage() {
     bbox:             { x: W*0.75 - rg.w/2, y: H*0.5 - rg.h/2, width: rg.w, height: rg.h },
     layerRef:         rg.group,
     spawnScale:       rg.group._baseScale,
+    naturalFacing:    rR.facing_direction ?? 'neutral',
     behaviorOverride: rAnchored ? 'stay' : (sceneDesc?.right_behavior   ?? null),
     motionHint:       rAnchored ? 'idle' : (sceneDesc?.right_motion_hint ?? null),
   });
+
+  // ── Apply initial facing flip ───────────────────────────────────────────────
+  // Left agent should face RIGHT (toward the right agent).
+  // Right agent should face LEFT (toward the left agent).
+  // If a sketch naturally faces the WRONG direction, flip it so it faces its partner.
+  {
+    const engine   = getEngine();
+    const agentL   = engine.registry?.get('agent_left');
+    const agentR   = engine.registry?.get('agent_right');
+
+    // Left agent: should face RIGHT → flip if naturalFacing === 'left'
+    if (agentL?.facingEnabled && agentL.naturalFacing === 'left') {
+      agentL.adapter.setFlipX(true);
+      console.log(`%c[facing] "${agentL.label}" (naturally faces left) → flipped to face right`, 'color:#0891b2;font-weight:bold');
+    }
+    // Right agent: should face LEFT → flip if naturalFacing === 'right'
+    if (agentR?.facingEnabled && agentR.naturalFacing === 'right') {
+      agentR.adapter.setFlipX(true);
+      console.log(`%c[facing] "${agentR.label}" (naturally faces right) → flipped to face left`, 'color:#0891b2;font-weight:bold');
+    }
+  }
 
   // ── Bottom dock: narrative text above End button, never overlapping ───────────
   // Build a single fixed container so both elements stack cleanly.

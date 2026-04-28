@@ -710,8 +710,11 @@ def detect_orientation():
         f"Reply ONLY with this JSON (no markdown):\n"
         f'{{\"rotation_correction\": <0, 90, -90, or 180>, '
         f'\"confidence\": \"<high|medium|low>\", '
+        f'\"facing_direction\": \"<left|right|neutral>\", '
         f'\"reasoning\": \"<one sentence>\"}}\n\n'
         f"Values: 0=upright (DEFAULT), 90=top points left, -90=top points right, 180=upside-down.\n"
+        f"facing_direction: right=front/face points RIGHT in image, left=front/face points LEFT, "
+        f"neutral=symmetrical (flower, star, sun, cloud, tree → always neutral).\n"
         f"DEFAULT IS 0. WHEN IN DOUBT RETURN 0."
     )
 
@@ -752,8 +755,12 @@ def detect_orientation():
             confidence = parsed.get("confidence", "medium")
             reasoning  = parsed.get("reasoning", "")
 
-            print(f"[detect-orientation] '{label}' → {rot}° ({confidence}) — {reasoning}")
-            return jsonify({"rotation_correction": rot, "confidence": confidence, "reasoning": reasoning})
+            raw_facing = parsed.get("facing_direction", "neutral").lower().strip()
+            facing     = raw_facing if raw_facing in ("left", "right", "neutral") else "neutral"
+
+            print(f"[detect-orientation] '{label}' → {rot}° ({confidence}) facing={facing} — {reasoning}")
+            return jsonify({"rotation_correction": rot, "confidence": confidence,
+                            "facing_direction": facing, "reasoning": reasoning})
 
     except Exception as e:
         print(f"[detect-orientation] GPT error for '{label}': {e}")

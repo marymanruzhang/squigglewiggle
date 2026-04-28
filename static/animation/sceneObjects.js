@@ -136,7 +136,12 @@ export class LayerAdapter {
   }
 
   // ── Scale ─────────────────────────────────────────────────────────────────
-  setScale(s) { this.setScaleXY(s, s); }
+  setScale(s) {
+    // Preserve the current flip state when scale is restored (e.g. by storyRunner)
+    const absS = Math.abs(s);
+    const sx   = this._flippedX ? -absS : absS;
+    this.setScaleXY(sx, absS);
+  }
 
   setScaleXY(sx, sy) {
     this._scaleX = sx; this._scaleY = sy;
@@ -149,6 +154,28 @@ export class LayerAdapter {
       if (typeof this.ref.setScaleXY  === 'function') this.ref.setScaleXY(sx, sy);
     }
   }
+
+  // ── Horizontal flip ───────────────────────────────────────────────────────
+  /**
+   * Flip the sketch horizontally in-place (around its visual centre).
+   * Works by negating scaleX. Rotation centre stays at group.x/y,
+   * and the Konva image child is already offset at (-w/2, -h/2) so
+   * the visual centre is unchanged after flipping.
+   */
+  setFlipX(flipped) {
+    this._flippedX = !!flipped;
+    const absS = Math.abs(this._scaleX || 1);
+    const sx   = this._flippedX ? -absS : absS;
+    this._scaleX = sx;
+    if (this.library === 'konva') {
+      this.ref.scaleX(sx);
+      this._batchDraw();
+    } else if (this.library === 'fabric') {
+      this.ref.set({ flipX: this._flippedX });
+      this.ref.canvas?.requestRenderAll();
+    }
+  }
+  getFlipX() { return this._flippedX || false; }
 
   // ── Opacity ───────────────────────────────────────────────────────────────
   setOpacity(v) {
@@ -210,7 +237,7 @@ export class SceneAgent {
    *   frames:       string[]
    * }} opts
    */
-  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames, spawnScale, behaviorOverride, motionHint }) {
+  constructor({ id, label, category, tags, defaultMotion, motionParams, bbox, layerRef, confidence, frames, spawnScale, behaviorOverride, motionHint, naturalFacing }) {
     this.id            = id;
     this.label         = label;
     this.category      = category;
@@ -220,6 +247,14 @@ export class SceneAgent {
     this.bbox          = { ...bbox };
     this.confidence    = confidence    || 1.0;
     this.frames        = frames        || [];
+
+    // ── Facing direction ──────────────────────────────────────────
+    // naturalFacing: the direction the subject NATURALLY faces in the drawing
+    //   'left'    → front/head points LEFT  (e.g. sheep walking leftward)
+    //   'right'   → front/head points RIGHT
+    //   'neutral' → symmetrical / no clear facing direction (flowers, stars…)
+    this.naturalFacing  = naturalFacing || 'neutral';
+    this.facingEnabled  = this.naturalFacing !== 'neutral';
 
     this.frameImages   = [];
     if (this.frames.length > 0) {

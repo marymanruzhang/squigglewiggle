@@ -58,6 +58,50 @@ export class InteractionEngine {
     const agents = this.registry.getAll();
     this._tickWander(agents);
     this._tickStory(agents);
+    this._tickFacing(agents);
+  }
+
+  // ── Facing: keep each sketch oriented toward its partner ──────────────────
+  //
+  // For sketches with a clear horizontal facing direction (animals, vehicles,
+  // characters), we flip them so they always face the other sketch.
+  // Neutral/symmetrical objects (flowers, stars, etc.) are never flipped.
+  //
+  // The formula:
+  //   iAmLeft          = my center X < partner center X
+  //   shouldFaceRight  = iAmLeft       (left agent should look right toward partner)
+  //   naturallyRight   = naturalFacing === 'right'
+  //   shouldFlip       = shouldFaceRight XOR naturallyRight
+  //                    → flip when natural direction disagrees with desired direction
+
+  _tickFacing(agents) {
+    if (agents.length < 2) return;
+    const now = Date.now();
+
+    for (const agent of agents) {
+      if (!agent.facingEnabled) continue;
+
+      // Debounce — don't re-evaluate more than once per 350ms per agent
+      if (agent._lastFacingUpdate && now - agent._lastFacingUpdate < 350) continue;
+      agent._lastFacingUpdate = now;
+
+      const partner = agents.find(a => a.id !== agent.id);
+      if (!partner) continue;
+
+      const myPos      = agent.adapter.getPosition();
+      const partnerPos = partner.adapter.getPosition();
+
+      const iAmLeft        = myPos.x < partnerPos.x;
+      const shouldFaceRight = iAmLeft;
+      const naturallyRight  = agent.naturalFacing === 'right';
+
+      // shouldFlip = true when natural facing disagrees with desired direction
+      const shouldFlip = shouldFaceRight !== naturallyRight;
+
+      if (shouldFlip !== agent.adapter.getFlipX()) {
+        agent.adapter.setFlipX(shouldFlip);
+      }
+    }
   }
 
   // ── Wander: give mobile objects new destinations over time ────────────────
