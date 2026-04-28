@@ -391,11 +391,20 @@ async function analyzeZone(zone) {
   btn.disabled = true;
   spin.classList.add('visible');
 
-  // Capture full composite (mountain SVG template + user strokes)
+  // ── Step 1: Capture zone snapshot for classification ──────────────────────
+  // We capture here AND store in state.snapshots so transitionToAnimationStage
+  // can reuse the exact same canvas rather than re-capturing (which risks getting
+  // a blank canvas if anything changes between classify and transition).
   const zoneCanvas = await captureZoneCanvas(zone, false);
   state.snapshots = state.snapshots || {};
   state.snapshots[zone] = zoneCanvas;
   const dataUrl = zoneCanvas.toDataURL('image/png');
+
+  // Also capture a strokes-only version for orientation detection.
+  // This removes the mountain SVG template so GPT judges orientation purely
+  // from the user's sketch without the jagged peaks confusing it.
+  const strokesCanvas  = await captureZoneCanvas(zone, true);
+  const strokesDataUrl = strokesCanvas.toDataURL('image/png');
 
   try {
     // ── Step 1: Classify (label + category + initial rotation hint) ─────────
@@ -418,8 +427,9 @@ async function analyzeZone(zone) {
       orientEl.className = 'result-orient checking';
     }
 
-    // Fire orientation detection — don't block the UI, update badge when done
-    detectSketchOrientation(dataUrl, result.label).then(orient => {
+    // Fire orientation detection — don't block the UI, update badge when done.
+    // *** Uses strokesDataUrl (no mountain template) so GPT is not confused ***
+    detectSketchOrientation(strokesDataUrl, result.label).then(orient => {
       const rawRot  = orient?.rotation_correction ?? 0;
       const conf    = orient?.confidence ?? 'low';
 
@@ -439,34 +449,35 @@ async function analyzeZone(zone) {
       // gate overrides it and keeps the sketch upright.
 
       const ROTATABLE_CATEGORIES = new Set([
-        'animal', 'animals', 'creature', 'creatures',
         'insect', 'insects', 'bug', 'bugs',
-        'bird', 'birds',
-        'fish', 'sea creature', 'sea creatures', 'marine',
-        'character', 'characters', 'person', 'people', 'human',
-        'reptile', 'amphibian',
       ]);
 
-      // Specific labels known to commonly be drawn sideways
+      // ONLY these specific labels can be rotation-corrected.
+      // These are the ONLY subjects that users genuinely commonly draw sideways.
+      // Everything else — including dogs, sheep, horses, fish — is almost always
+      // drawn in its natural orientation and must never be rotated.
       const ROTATABLE_LABELS = new Set([
-        'butterfly', 'moth', 'dragonfly', 'bee', 'fly', 'mosquito',
-        'fish', 'shark', 'whale', 'dolphin', 'octopus', 'starfish',
-        'snake', 'worm', 'caterpillar', 'slug',
-        'bird', 'eagle', 'owl', 'penguin', 'flamingo', 'parrot',
-        'horse', 'dog', 'cat', 'rabbit', 'sheep', 'cow', 'pig',
-        'lion', 'tiger', 'elephant', 'giraffe', 'deer', 'fox',
-        'person', 'human', 'figure', 'character',
+        'butterfly', 'moth', 'dragonfly',
       ]);
 
-      // Hard block — never rotate these regardless of any other condition
+      // Hard block — never rotate these regardless of any other condition.
+      // Quadruped animals are ALWAYS drawn standing up by users; rotation
+      // correction almost always makes them worse, never better.
       const NEVER_ROTATE_LABELS = new Set([
-        'flower', 'rose', 'tulip', 'daisy', 'sunflower', 'lotus',
-        'plant', 'tree', 'bush', 'cactus', 'fern', 'leaf', 'grass',
-        'star', 'moon', 'sun', 'cloud', 'rainbow', 'lightning',
-        'crown', 'ring', 'hat', 'ball', 'balloon',
-        'house', 'building', 'castle', 'door', 'window',
-        'car', 'truck', 'boat', 'rocket', 'airplane',
-        'food', 'pizza', 'cake', 'apple', 'banana',
+        'flower', 'rose', 'tulip', 'daisy', 'sunflower', 'lotus', 'blossom',
+        'plant', 'tree', 'bush', 'cactus', 'fern', 'leaf', 'grass', 'mushroom',
+        'star', 'moon', 'sun', 'cloud', 'rainbow', 'lightning', 'snowflake',
+        'crown', 'ring', 'hat', 'ball', 'balloon', 'gem', 'diamond',
+        'house', 'building', 'castle', 'door', 'window', 'bridge',
+        'car', 'truck', 'bus', 'boat', 'ship', 'rocket', 'airplane', 'train',
+        'food', 'pizza', 'cake', 'apple', 'banana', 'strawberry',
+        // Animals — always drawn standing/swimming/flying in natural orientation
+        'dog', 'cat', 'sheep', 'cow', 'pig', 'horse', 'rabbit', 'deer',
+        'lion', 'tiger', 'bear', 'elephant', 'giraffe', 'fox', 'wolf',
+        'fish', 'shark', 'whale', 'dolphin', 'octopus', 'crab',
+        'bird', 'eagle', 'owl', 'penguin', 'flamingo', 'parrot', 'duck',
+        'snake', 'worm', 'caterpillar', 'snail',
+        'person', 'human', 'figure', 'character', 'robot',
       ]);
 
       const catLow   = (result.category ?? '').toLowerCase().trim();
@@ -768,9 +779,20 @@ async function transitionToAnimationStage() {
     }
   }, 2800);
 
-  // ── Step 1: Capture BEFORE hiding (zones must still be visible in DOM) ──
-  const leftSnap  = await captureZoneCanvas('left');
-  const rightSnap = await captureZoneCanvas('right');
+  // ── Step 1: Use stored snapshots (captured + verified during analyzeZone) ─────
+  // IMPORTANT: Do NOT re-capture here. The snapshots in state.snapshots were taken
+  // at the moment the user clicked "Done" and are the exact images GPT classified.
+  // Re-capturing risks getting a blank/changed canvas if anything has shifted
+  // between classification and transition (race conditions, canvas clears, etc.).
+  const leftSnap  = state.snapshots?.left  ?? await captureZoneCanvas('left');
+  const rightSnap = state.snapshots?.right ?? await captureZoneCanvas('right');
+
+  if (!leftSnap || !rightSnap) {
+    console.error('[SquiggleWiggle] Missing zone snapshots — aborting animation stage');
+    clearInterval(_statusInterval);
+    if (procOverlay) procOverlay.classList.remove('visible');
+    return;
+  }
 
   // ── Step 2: Fade out zone chrome, keep white background ─────────────────
   ['left', 'right'].forEach(zone => {
