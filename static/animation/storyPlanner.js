@@ -336,7 +336,14 @@ export function selectBestPlan(agents) {
         if (!source) continue;
 
         matched = true;
-        const plan = { id: template.id, template, source, target, priority: template.priority, distance: dist };
+
+        // Apply capability-based beat substitution so impossible beats
+        // (e.g. growOrBloom on a house) are replaced with appropriate
+        // alternatives even for hardcoded templates.
+        const substitutedBeats    = _substituteBeats(template.beats, source, target);
+        const substitutedTemplate = { ...template, beats: substitutedBeats };
+
+        const plan = { id: template.id, template: substitutedTemplate, source, target, priority: template.priority, distance: dist };
         candidates.push({ plan, score: _scorePlan(plan) });
         break;
       }
