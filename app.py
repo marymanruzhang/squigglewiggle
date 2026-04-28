@@ -1481,11 +1481,26 @@ def download_page(session_id):
 
 
 
+
 if __name__ == "__main__":
     import socket as _socket
-    # Auto-detect the machine's LAN IP so the operator knows what URL to open.
-    # The QR code on the end-screen will encode this same address, letting
-    # phones on the same WiFi scan and download their animation.
+    from dotenv import load_dotenv as _load_dotenv
+    _load_dotenv()
+
+    _ngrok_token = os.environ.get("NGROK_AUTHTOKEN", "").strip()
+    _public_url  = None
+
+    if _ngrok_token:
+        try:
+            from pyngrok import ngrok as _ngrok, conf as _ngrok_conf
+            _ngrok_conf.get_default().auth_token = _ngrok_token
+            _tunnel      = _ngrok.connect(5001, "http")
+            _public_url  = _tunnel.public_url.replace("http://", "https://")
+        except Exception as _e:
+            print(f"\n  ⚠  ngrok failed to start: {_e}")
+            print("     Falling back to local-network mode.\n")
+
+    # ── Detect LAN IP as fallback ─────────────────────────────────────────────
     try:
         _s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
         _s.connect(("8.8.8.8", 80))
@@ -1494,16 +1509,25 @@ if __name__ == "__main__":
     except Exception:
         _lan_ip = "127.0.0.1"
 
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 62)
     print("  SquiggleWiggle is starting…")
-    print("=" * 60)
-    print(f"\n  Operator browser  →  http://localhost:5001")
-    print(f"  Phone / tablet    →  http://{_lan_ip}:5001")
-    print(f"\n  ⚠  Open the app using the NETWORK URL above")
-    print(f"     (http://{_lan_ip}:5001) so the QR code")
-    print(f"     encodes the right address for phones to scan.")
-    print(f"\n  Both the computer and phones must be on the")
-    print(f"  SAME Wi-Fi network.")
-    print("\n" + "=" * 60 + "\n")
+    print("=" * 62)
+    if _public_url:
+        print(f"\n  ✅  ngrok tunnel active!")
+        print(f"\n  ┌─────────────────────────────────────────────┐")
+        print(f"  │  Open in browser → {_public_url:<24} │")
+        print(f"  └─────────────────────────────────────────────┘")
+        print(f"\n  QR codes will encode this public URL so phones")
+        print(f"  can download animations from ANYWHERE — no")
+        print(f"  shared Wi-Fi required.")
+    else:
+        print(f"\n  ⚠  ngrok not active — local network only")
+        print(f"\n  Operator browser  →  http://localhost:5001")
+        print(f"  Phone / tablet    →  http://{_lan_ip}:5001")
+        print(f"\n  Open the NETWORK URL in your browser so the QR")
+        print(f"  code encodes the right address for phones.")
+    print("\n" + "=" * 62 + "\n")
 
-    app.run(host="0.0.0.0", port=5001, debug=True)
+    # use_reloader=False prevents Flask's hot-reloader from spawning a second
+    # process and creating a duplicate ngrok tunnel.
+    app.run(host="0.0.0.0", port=5001, debug=True, use_reloader=False)
