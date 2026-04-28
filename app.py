@@ -961,6 +961,39 @@ Rules:
         return jsonify({"error": str(e)}), 500
 
 
+# Python-side capability system (mirrors subjectCapabilities.js)
+# Used to inject capability constraints into GPT prompts.
+_STATIC_LABELS  = {'house','building','castle','tower','bridge','mountain','rock','cliff',
+                    'tree','plant','flower','rose','tulip','daisy','sunflower','cactus','fern',
+                    'mushroom','grass','bush','statue'}
+_BLOSSOM_LABELS = {'flower','rose','tulip','daisy','sunflower','lotus','blossom','tree',
+                    'bush','plant','fern','cactus'}
+_GLOW_LABELS    = {'house','building','castle','tower','star','moon','sun','comet','planet',
+                    'rainbow','lightning','fire','lantern','candle','gem','diamond','ring'}
+_ANIMATE_LABELS = {'dog','cat','rabbit','sheep','cow','pig','horse','deer','fox','wolf','bear',
+                    'lion','tiger','elephant','giraffe','turtle','frog','snake','worm','caterpillar',
+                    'butterfly','bee','dragonfly','moth','ant','ladybug','bird','eagle','owl',
+                    'penguin','flamingo','parrot','duck','fish','shark','whale','dolphin','octopus',
+                    'crab','person','human','figure','robot'}
+_STATIC_CATS    = {'plant','nature','building','landscape','vehicle','object'}
+_ANIMATE_CATS   = {'animal','insect','bird','fish','sea creature','marine','character','people','person'}
+
+def _get_cap_constraints(label, category):
+    """Return a short constraint string for a subject, for injection into GPT prompts."""
+    ll, cl = label.lower().strip(), category.lower().strip()
+    is_static  = ll in _STATIC_LABELS  or cl in _STATIC_CATS
+    is_animate = ll in _ANIMATE_LABELS or cl in _ANIMATE_CATS
+    can_bloom  = ll in _BLOSSOM_LABELS
+    can_glow   = ll in _GLOW_LABELS
+    parts = []
+    if is_static:  parts.append('is_static (cannot move, flee, or chase)')
+    if is_animate: parts.append('is_animate (can move, flee, approach)')
+    if can_bloom:  parts.append('can_blossom')
+    if can_glow:   parts.append('can_glow')
+    if not parts:  parts.append('passive object')
+    return ', '.join(parts)
+
+
 # ── /api/semantic-scene ───────────────────────────────────────────────────────
 # Given two sketch labels + categories, asks GPT-4o to describe how they should
 # interact semantically. Returns motion hints, narrative, and approach behavior.
@@ -978,13 +1011,16 @@ def semantic_scene():
     if not openai_key:
         return jsonify({"error": "No API key"}), 500
 
+    cap_left  = _get_cap_constraints(label_left,  category_left)
+    cap_right = _get_cap_constraints(label_right, category_right)
+
     prompt = f"""Two hand-drawn sketches will animate together on screen.
-Sketch A (left):  "{label_left}"  category="{category_left}"  tags={tags_left}
-Sketch B (right): "{label_right}" category="{category_right}" tags={tags_right}
+Sketch A (left):  "{label_left}"  category="{category_left}"  capabilities: {cap_left}
+Sketch B (right): "{label_right}" category="{category_right}" capabilities: {cap_right}
 
 Describe a brief, charming interaction between them. Return ONLY valid JSON:
 {{
-  "narrative": "one sentence describing what happens (e.g. 'The fairy flies toward the house and peeks through the window')",
+  "narrative": "one sentence describing what happens",
   "left_behavior": "approach|stay|flee|orbit|circle_around|wander",
   "right_behavior": "approach|stay|flee|orbit|circle_around|wander",
   "left_motion_hint": "one of: walk, fly, swim, bounce, sway, idle, spin",
@@ -992,18 +1028,21 @@ Describe a brief, charming interaction between them. Return ONLY valid JSON:
   "interaction_type": "one of: greet, chase, avoid, shelter, admire, play, coexist"
 }}
 
-Rules:
-- Anchored/terrain objects (mountain, house, rock, tree) ALWAYS have behavior "stay"
-- Mobile animals approach or interact with each other or with the environment
-- The interaction should match real-world logic (e.g. a bee pollinates a flower, a dog chases a cat)
-- Keep the narrative whimsical and one sentence
+Capability rules (MUST obey):
+- Any subject with is_static MUST have behavior "stay" — it cannot move, flee, or chase
+- Only subjects with can_blossom may "bloom", "blossom", "flower", or "open" in the narrative
+- Only subjects with can_glow may "glow", "light up", or "shine" in the narrative
+- Animate subjects (is_animate) can approach, flee, orbit, and interact freely
+- Do NOT write that a building bounced, blossomed, ran, fled, or chased
+- Do NOT write that a plant ran, fled, or chased
+- The narrative must only describe actions the subject is physically capable of
 
 Examples:
-  fairy + house     → fairy approaches house, house stays; fairy flies to house and peeks in the window
-  dog + cat         → dog approaches cat, cat flees; playful chase
-  butterfly + flower→ butterfly orbits flower, flower sways; butterfly pollinates the flower
-  sheep + mountain  → sheep wanders toward mountain, mountain stays; sheep grazes at the base of the mountain
-  fish + octopus    → both approach, swim together; two sea creatures meet and dance"""
+  fairy + house     → fairy approaches, house stays; fairy peeks through the window and the house glows warmly
+  dog + cat         → dog approaches, cat flees; a playful chase through the scene
+  butterfly + flower→ butterfly orbits, flower sways; butterfly pollinates the flower which opens in bloom
+  sheep + mountain  → sheep approaches, mountain stays; sheep grazes peacefully at the mountain's base
+  fish + octopus    → both approach and swim; two sea creatures meet and dance"""
 
     payload = {
         "model": "gpt-4o",
@@ -1128,9 +1167,12 @@ def live_story():
     if not openai_key:
         return jsonify({"error": "No API key"}), 500
 
+    cap_a = _get_cap_constraints(label_a, category_a)
+    cap_b = _get_cap_constraints(label_b, category_b)
+
     prompt = f"""Two hand-drawn sketches will animate together on a shared canvas.
-Sketch A: "{label_a}"  category="{category_a}"  tags={tags_a}
-Sketch B: "{label_b}"  category="{category_b}"  tags={tags_b}
+Sketch A: "{label_a}"  category="{category_a}"  capabilities: {cap_a}
+Sketch B: "{label_b}"  category="{category_b}"  capabilities: {cap_b}
 
 Describe a brief, charming, semantically meaningful interaction between them.
 Return ONLY valid JSON (no extra text, no markdown):
@@ -1144,16 +1186,21 @@ Return ONLY valid JSON (no extra text, no markdown):
   "tags_inferred": ["optional", "extra", "semantic", "tags"]
 }}
 
-Rules:
-- Anchored/terrain objects (mountain, house, rock, tree) ALWAYS have behavior "stay"
-- Mobile animals interact based on their real-world ecological relationship
-- "tags_inferred" should list any new semantic tags implied by this pair
+Capability rules (MUST obey):
+- Any subject with is_static MUST have behavior "stay" — it cannot move, flee, or chase
+- Only subjects with can_blossom may "bloom", "blossom", or "open" in the narrative
+- Only subjects with can_glow may "glow", "light up", or "shine" in the narrative
+- Animate subjects (is_animate) can approach, flee, orbit, and interact freely
+- Do NOT say a building bounced, blossomed, ran, fled, or chased
+- Do NOT say a plant ran, fled, or chased
+- The narrative must describe only actions the subject can physically do
 
 Examples:
-  bee + flower     -> behavior_a=orbit, behavior_b=stay, interaction_type=admire
-  dog + cat        -> behavior_a=approach, behavior_b=flee, interaction_type=chase
-  sheep + mountain -> behavior_a=approach, behavior_b=stay, interaction_type=coexist
-  fish + shark     -> behavior_a=flee, behavior_b=chase, interaction_type=chase"""
+  bee + flower     → behavior_a=orbit, behavior_b=stay, interaction_type=admire, flower sways and blooms
+  dog + cat        → behavior_a=approach, behavior_b=flee, interaction_type=chase
+  sheep + mountain → behavior_a=approach, behavior_b=stay, interaction_type=coexist, sheep grazes at the base
+  butterfly + house→ behavior_a=orbit, behavior_b=stay, interaction_type=admire, house glows as the butterfly circles
+  fish + shark     → behavior_a=flee, behavior_b=chase, interaction_type=chase"""
 
     payload = {
         "model": "gpt-4o",

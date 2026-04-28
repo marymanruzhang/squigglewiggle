@@ -24,6 +24,7 @@
 import { getBeat } from './storyBeatAnimations.js';
 import { recordCooldown } from './storyPlanner.js';
 import { wait } from './motionPresets.js';
+import { getCaps } from './subjectCapabilities.js';
 
 // ─── Narrative helpers ────────────────────────────────────────────────────────
 
@@ -53,7 +54,7 @@ function _narrativeForPlan(plan) {
   return `The ${src} and ${tgt} share a peaceful moment.`;
 }
 
-/** Beat types that warrant a mid-beat narrative update (action is clearly visible). */
+/** Beat types → narrative text functions. null = resolved dynamically below. */
 const BEAT_NARRATIVES = {
   noticeTarget:     (src, tgt) => `The ${src} notices the ${tgt}…`,
   approachTarget:   (src, tgt) => `The ${src} makes its way toward the ${tgt}.`,
@@ -61,11 +62,64 @@ const BEAT_NARRATIVES = {
   fleeFromTarget:   (src, tgt) => `The ${tgt} dashes away from the ${src}!`,
   chaseTarget:      (src, tgt) => `The ${src} gives chase!`,
   orbitTarget:      (src, tgt) => `The ${src} circles around the ${tgt}.`,
-  hideUnderShelter: (src, tgt) => `The ${src} nestles in close to the ${tgt}.`,
-  growOrBloom:      (src, tgt) => `The ${tgt} blossoms in response.`,
-  happyBounce:      (src, tgt) => `The ${src} bounces with joy!`,
-  pauseAndLook:     (src, tgt) => `The ${src} pauses to take in the ${tgt}.`,
+  pauseAndLook:     (src, tgt) => `The ${src} pauses to admire the ${tgt}.`,
+  sniffTarget:      (src, tgt) => `The ${src} sniffs curiously at the ${tgt}.`,
+  nibbleTarget:     (src, tgt) => `The ${src} nibbles gently on the ${tgt}.`,
+  landNearTarget:   (src, tgt) => `The ${src} lands softly near the ${tgt}.`,
+  restNearTarget:   (src, tgt) => `The ${src} rests peacefully near the ${tgt}.`,
+  hideUnderShelter: (src, tgt) => `The ${src} nestles beside the ${tgt}.`,
+  rainOnTarget:     (src, tgt) => `The ${src} showers the ${tgt} with attention.`,
+  reactSurprise:    (src, tgt) => `The ${src} is startled!`,
+  returnToIdle:     null,  // silent — no text update on cleanup beats
+  // Capability-sensitive — resolved in _executeBeat below:
+  growOrBloom:      null,
+  happyBounce:      null,
+  reactBounce:      null,
+  strongerSway:     null,
+  reactWiggle:      null,
+  pulseLight:       null,
 };
+
+/**
+ * Pick a capability-aware narrative for beats whose text depends on
+ * what the subject physically is (plant, building, animal, etc.).
+ */
+function _capNarrative(beatType, actorLabel, actorCategory) {
+  const caps = getCaps(actorLabel, actorCategory);
+  const name = actorLabel ?? 'it';
+
+  switch (beatType) {
+    case 'growOrBloom':
+      if (caps.has('can_blossom')) return `The ${name} bursts into bloom!`;
+      if (caps.has('can_glow'))    return `The ${name} glows warmly.`;
+      if (caps.has('can_sway'))    return `The ${name} sways gently.`;
+      return `The ${name} shimmers in response.`;
+
+    case 'happyBounce':
+      if (caps.has('can_bounce')) return `The ${name} bounces with excitement!`;
+      if (caps.has('can_sway'))   return `The ${name} sways joyfully.`;
+      return `The ${name} shakes with delight.`;
+
+    case 'reactBounce':
+      if (caps.has('can_bounce')) return `The ${name} jumps in response!`;
+      return `The ${name} trembles gently.`;
+
+    case 'strongerSway':
+      if (caps.has('can_blossom')) return `The ${name} sways and rustles.`;
+      return `The ${name} sways in place.`;
+
+    case 'reactWiggle':
+      if (caps.has('is_static'))   return `The ${name} trembles slightly.`;
+      if (caps.has('is_animate'))  return `The ${name} wiggles in reaction.`;
+      return `The ${name} shakes gently.`;
+
+    case 'pulseLight':
+      return `The ${name} pulses with light.`;
+
+    default:
+      return null;
+  }
+}
 
 // ─── Active story tracking ────────────────────────────────────────────────────
 // Maps agentId → { storyId, abortFn }
@@ -110,14 +164,26 @@ async function _executeBeat(beatDesc, plan, controller) {
   // ── Live narrative update: swap dock text for key visible actions ──────────────
   if (typeof window?.squiggleSetNarrative === 'function') {
     const narrativeFn = BEAT_NARRATIVES[type];
-    if (narrativeFn) {
+    let beatNarrative = null;
+
+    if (narrativeFn !== undefined && narrativeFn !== null) {
+      // Static narrative function — apply source/target label perspective
       const srcLabel = plan.source?.label ?? 'one';
       const tgtLabel = plan.target?.label ?? 'the other';
-      const beatNarrative = actorRole === 'target'
-        ? narrativeFn(tgtLabel, srcLabel)   // reverse perspective for target actor
+      beatNarrative = actorRole === 'target'
+        ? narrativeFn(tgtLabel, srcLabel)
         : narrativeFn(srcLabel, tgtLabel);
-      window.squiggleSetNarrative(beatNarrative);
+    } else if (narrativeFn === null && type in BEAT_NARRATIVES) {
+      // Capability-sensitive beat — resolve dynamically from actor's caps
+      const actor = actorRole === 'source' ? plan.source
+                  : actorRole === 'target' ? plan.target
+                  : null;
+      if (actor) {
+        beatNarrative = _capNarrative(type, actor.label, actor.category);
+      }
     }
+
+    if (beatNarrative) window.squiggleSetNarrative(beatNarrative);
   }
 
   if (actorRole === 'both') {

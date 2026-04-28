@@ -28,6 +28,7 @@
  */
 
 import { STORY_TEMPLATES } from './storyTemplates.js';
+import { getCaps } from './subjectCapabilities.js';
 
 // ─── Cooldown store ───────────────────────────────────────────────────────────
 const _templateCooldowns = new Map();
@@ -206,12 +207,93 @@ function _beatsFromInteractionType(type) {
     run: 'chase', flee: 'chase',
   };
   const resolved = ALIASES[type] ?? type;
-  return BEAT_MAPS[resolved] || BEAT_MAPS.coexist;
+  const rawBeats = BEAT_MAPS[resolved] || BEAT_MAPS.coexist;
+
+  // Apply capability-based beat substitution so impossible beats are replaced
+  return source && target ? _substituteBeats(rawBeats, source, target) : rawBeats;
 }
 
-function _buildSyntheticTemplate(key, storyData) {
+/**
+ * Replace beats that the actor physically cannot perform with capability-
+ * appropriate alternatives. This prevents nonsense like "the house blossomed"
+ * or "the mountain fled" from ever appearing in the animation.
+ *
+ * @param {Array}      beats   Raw beat descriptors
+ * @param {SceneAgent} source
+ * @param {SceneAgent} target
+ * @returns {Array} Substituted beat descriptors
+ */
+function _substituteBeats(beats, source, target) {
+  return beats
+    .map(beat => {
+      const actor = beat.actor === 'source' ? source
+                  : beat.actor === 'target' ? target
+                  : null;
+      if (!actor) return beat;
+
+      const caps = getCaps(actor.label, actor.category);
+
+      switch (beat.type) {
+        // growOrBloom — requires can_blossom or can_glow
+        case 'growOrBloom':
+          if (caps.has('can_blossom') || caps.has('can_glow')) return beat;
+          // Fallback: sway for plants, wiggle for everything else
+          return caps.has('can_sway')
+            ? { ...beat, type: 'strongerSway',  params: { duration: 900, amplitude: 8 } }
+            : { ...beat, type: 'reactWiggle',   params: { duration: 700, amplitude: 5 } };
+
+        // happyBounce — requires can_bounce
+        case 'happyBounce':
+          if (caps.has('can_bounce')) return beat;
+          return caps.has('can_sway')
+            ? { ...beat, type: 'strongerSway',  params: { duration: 700, amplitude: 10 } }
+            : { ...beat, type: 'reactWiggle',   params: { duration: 600, amplitude: 8 } };
+
+        // reactBounce — requires can_bounce
+        case 'reactBounce':
+          if (caps.has('can_bounce')) return beat;
+          return { ...beat, type: 'reactWiggle', params: { duration: 500, amplitude: 6 } };
+
+        // fleeFromTarget — requires can_flee AND NOT is_static
+        case 'fleeFromTarget':
+          if (caps.has('can_flee') && !caps.has('is_static')) return beat;
+          // Static/non-animate subjects just wiggle defensively
+          return { ...beat, type: 'reactWiggle', params: { duration: 600, amplitude: 5 } };
+
+        // chaseTarget — requires can_chase AND NOT is_static
+        case 'chaseTarget':
+          if (caps.has('can_chase') && !caps.has('is_static')) return beat;
+          // Downgrade to a passive approach
+          return { ...beat, type: 'approachTarget', params: { margin: 60, duration: 900 } };
+
+        // swimIntoWater — requires can_swim
+        case 'swimIntoWater':
+          if (caps.has('can_swim')) return beat;
+          return { ...beat, type: 'restNearTarget', params: { duration: 900 } };
+
+        // approachTarget / approachWithCurve — is_static subjects can't move
+        case 'approachTarget':
+        case 'approachWithCurve':
+          if (!caps.has('is_static')) return beat;
+          // Replace with a passive reaction in place
+          return { ...beat, type: 'reactWiggle', params: { duration: 500, amplitude: 4 } };
+
+        // orbitTarget — is_static subjects can't orbit
+        case 'orbitTarget':
+          if (!caps.has('is_static')) return beat;
+          return { ...beat, type: 'reactWiggle', params: { duration: 800, amplitude: 5 } };
+
+        default:
+          return beat;
+      }
+    })
+    // Remove null entries (in case future logic drops beats entirely)
+    .filter(Boolean);
+}
+
+function _buildSyntheticTemplate(key, storyData, agentA, agentB) {
   if (!storyData) return null;
-  const beats = _beatsFromInteractionType(storyData.interaction_type || 'coexist');
+  const beats = _beatsFromInteractionType(storyData.interaction_type || 'coexist', agentA, agentB);
   return {
     id:       `live__${key}`,
     priority: 3,
@@ -264,7 +346,8 @@ export function selectBestPlan(agents) {
         const key = _pairKey(a, b);
         if (_semanticCache.has(key) && !_hasCooldown(`live__${key}`, a, b)) {
           const storyData = _semanticCache.get(key);
-          const syntheticTemplate = _buildSyntheticTemplate(key, storyData);
+          // Pass agents so _buildSyntheticTemplate can apply beat substitution
+          const syntheticTemplate = _buildSyntheticTemplate(key, storyData, a, b);
           if (syntheticTemplate && dist <= syntheticTemplate.radius) {
             const plan = {
               id:        `live__${key}`,
