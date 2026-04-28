@@ -55,9 +55,21 @@ _AUTO_FALLBACK = os.environ.get("HYPERSENSE_REQUIRE_MODEL", "").lower() not in (
 model   = None
 classes: dict | None = None
 
+# Public URL exposed by ngrok (set at startup). None = local-only mode.
+# Returned by /api/server-info so the frontend always builds correct QR URLs.
+_PUBLIC_URL: str | None = None
+
 
 def _allow_without_classifier() -> bool:
     return _AUTO_FALLBACK
+
+
+# ── /api/server-info ──────────────────────────────────────────────────────────
+# Returns the public base URL (ngrok or LAN) so the frontend can build QR codes
+# that work on phones regardless of what URL the operator's browser is using.
+@app.route('/api/server-info')
+def server_info():
+    return jsonify({'public_url': _PUBLIC_URL or ''})
 
 
 @app.before_request
@@ -1496,6 +1508,8 @@ if __name__ == "__main__":
             _ngrok_conf.get_default().auth_token = _ngrok_token
             _tunnel      = _ngrok.connect(5001, "http")
             _public_url  = _tunnel.public_url.replace("http://", "https://")
+            # Update the module-level global so /api/server-info can return it
+            _PUBLIC_URL  = _public_url
         except Exception as _e:
             print(f"\n  ⚠  ngrok failed to start: {_e}")
             print("     Falling back to local-network mode.\n")

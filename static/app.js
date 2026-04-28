@@ -1417,9 +1417,20 @@ if (endBtn && tyScreen) {
       const resp = await fetch('/api/save-assets', { method: 'POST', body: form });
       const data = await resp.json();
 
-      // 5. Build full URL using the same host the browser used
-      //    (using window.location.host means QR works on phones on the same LAN)
-      const downloadUrl = `${window.location.protocol}//${window.location.host}${data.download_page}`;
+      // 5. Get the public URL from the server (ngrok tunnel or LAN IP).
+      //    Using /api/server-info instead of window.location.host means the QR
+      //    always encodes the correct reachable address even when the operator's
+      //    browser is using localhost:5001.
+      let baseUrl;
+      try {
+        const info = await fetch('/api/server-info').then(r => r.json());
+        baseUrl = info.public_url
+          ? info.public_url.replace(/\/$/, '')          // use ngrok URL
+          : `${window.location.protocol}//${window.location.host}`;  // LAN fallback
+      } catch (_) {
+        baseUrl = `${window.location.protocol}//${window.location.host}`;
+      }
+      const downloadUrl = `${baseUrl}${data.download_page}`;
       console.log('[qr] download URL:', downloadUrl);
 
       // 6. Generate QR code (qrcode-generator — 100% client-side, no CDN at scan time)
