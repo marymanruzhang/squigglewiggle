@@ -65,11 +65,23 @@ def _allow_without_classifier() -> bool:
 
 
 # ── /api/server-info ──────────────────────────────────────────────────────────
-# Returns the public base URL (ngrok or LAN) so the frontend can build QR codes
-# that work on phones regardless of what URL the operator's browser is using.
+# Returns the live ngrok public URL by querying pyngrok at request time.
+# This is more reliable than a startup global because it reads the actual
+# running tunnel rather than depending on variable scoping across init code.
 @app.route('/api/server-info')
 def server_info():
-    return jsonify({'public_url': _PUBLIC_URL or ''})
+    pub = _PUBLIC_URL  # set at startup (may be None if scoping issue)
+    if not pub:
+        # Query pyngrok directly for any active tunnel
+        try:
+            from pyngrok import ngrok as _ng
+            tunnels = _ng.get_tunnels()
+            if tunnels:
+                pub = tunnels[0].public_url.replace('http://', 'https://')
+        except Exception:
+            pass
+    print(f'[server-info] returning public_url={pub!r}')
+    return jsonify({'public_url': pub or ''})
 
 
 @app.before_request

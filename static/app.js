@@ -1424,11 +1424,22 @@ if (endBtn && tyScreen) {
       let baseUrl;
       try {
         const info = await fetch('/api/server-info').then(r => r.json());
-        baseUrl = info.public_url
-          ? info.public_url.replace(/\/$/, '')          // use ngrok URL
-          : `${window.location.protocol}//${window.location.host}`;  // LAN fallback
-      } catch (_) {
-        baseUrl = `${window.location.protocol}//${window.location.host}`;
+        const pub  = (info.public_url || '').trim();
+        // Only accept a real public URL — never localhost or 127.0.0.1
+        if (pub && !pub.includes('127.0.0.1') && !pub.includes('localhost')) {
+          baseUrl = pub.replace(/\/$/, '');
+          console.log('[qr] using ngrok public URL:', baseUrl);
+        } else {
+          throw new Error(`ngrok URL not ready (got: "${pub}"). Is ngrok running?`);
+        }
+      } catch (err) {
+        console.error('[qr] cannot build QR:', err.message);
+        if (qrUploading) qrUploading.style.display = 'none';
+        if (qrCanvas) {
+          qrCanvas.style.display = 'block';
+          qrCanvas.innerHTML = '<p style="color:#c0392b;font-size:13px;padding:8px">⚠ QR unavailable<br>ngrok tunnel not active.<br>Restart the server and check<br>the terminal for the ngrok URL.</p>';
+        }
+        return;
       }
       const downloadUrl = `${baseUrl}${data.download_page}`;
       console.log('[qr] download URL:', downloadUrl);
