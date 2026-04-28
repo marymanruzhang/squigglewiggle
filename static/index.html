@@ -5,6 +5,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Time to Make the Squiggles Wiggle</title>
+  <!-- QR code generator (100% client-side) -->
+  <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -161,6 +163,17 @@
   .zone-result.visible { display: block; }
   .result-category { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
   .result-label { font-size: 18px; font-weight: 700; color: #1b4332; }
+  .result-orient {
+    font-size: 12px;
+    margin-top: 5px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    display: inline-block;
+    font-family: system-ui, sans-serif;
+  }
+  .result-orient.upright  { background: #d1fae5; color: #065f46; }
+  .result-orient.rotated  { background: #fef3c7; color: #92400e; }
+  .result-orient.checking { background: #f3f4f6; color: #6b7280; font-style: italic; }
 
   #result-left  { left:  12.5%; transform: translateX(-50%); }
   #result-right { left:  75%;   transform: translateX(-50%); }
@@ -216,32 +229,31 @@
   }
   #start-btn:hover { transform: scale(1.04); }
 
-  /* End button (lives inside #bottom-dock, stacked below narrative text) */
+  /* End button — matches the welcome screen's green palette */
   #end-btn {
-    background: rgba(30, 10, 60, 0.82);
+    background: #2d6a4f;
     color: #fff;
-    border: 2px solid rgba(255,255,255,0.25);
-    padding: 12px 38px;
-    border-radius: 32px;
+    border: none;
+    padding: 13px 36px;
+    border-radius: 28px;
     font-size: 16px;
     font-family: 'Georgia', serif;
     cursor: pointer;
-    letter-spacing: 0.04em;
-    backdrop-filter: blur(10px);
-    box-shadow: 0 6px 28px rgba(0,0,0,0.35);
+    letter-spacing: 0.02em;
+    box-shadow: 0 6px 20px rgba(45,106,79,0.35);
     pointer-events: all;
     display: none;
-    transition: transform 0.15s, background 0.2s;
+    transition: transform 0.15s;
     white-space: nowrap;
   }
-  #end-btn:hover { transform: scale(1.06); background: rgba(60,20,100,0.88); }
+  #end-btn:hover { transform: scale(1.04); }
   #end-btn.visible { display: block; }
 
-  /* Thank-you screen */
+  /* Thank-you screen — same warm aesthetic as the welcome screen */
   #thankyou-screen {
     position: fixed;
     inset: 0;
-    background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+    background: linear-gradient(135deg, #f8f5f0 0%, #e8f4f0 100%);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -265,35 +277,126 @@
     to   { transform: rotate( 8deg) scale(1.12); }
   }
   #thankyou-screen h1 {
-    font-size: clamp(22px, 4vw, 40px);
+    font-size: clamp(22px, 4vw, 38px);
     font-family: 'Georgia', serif;
-    color: #fff;
+    color: #1b4332;
     text-align: center;
-    max-width: 640px;
+    max-width: 580px;
     line-height: 1.35;
-    text-shadow: 0 2px 18px rgba(160,100,255,0.5);
     margin: 0;
   }
   #thankyou-screen p {
-    color: rgba(255,255,255,0.65);
+    color: #555;
     font-size: 16px;
+    font-family: system-ui, sans-serif;
+    text-align: center;
+    margin: 0;
+    max-width: 420px;
+    line-height: 1.6;
+  }
+  #restart-btn {
+    margin-top: 8px;
+    background: #2d6a4f;
+    color: #fff;
+    border: none;
+    padding: 14px 36px;
+    border-radius: 28px;
+    font-size: 16px;
+    font-family: 'Georgia', serif;
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(45,106,79,0.35);
+    transition: transform 0.15s;
+    letter-spacing: 0.02em;
+  }
+  #restart-btn:hover { transform: scale(1.04); }
+
+  /* QR code section on the thank-you screen */
+  #qr-section {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    background: #fff;
+    border-radius: 20px;
+    padding: 20px 28px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.10);
+    margin-top: 4px;
+  }
+  #qr-section.visible { display: flex; }
+  #qr-canvas img, #qr-canvas canvas {
+    border-radius: 10px;
+    display: block;
+  }
+  #qr-label {
+    color: #1b4332;
+    font-family: Georgia, serif;
+    font-size: 14px;
     text-align: center;
     margin: 0;
   }
-  #restart-btn {
-    margin-top: 10px;
-    background: linear-gradient(135deg, #7c3aed, #ec4899);
-    color: #fff;
-    border: none;
-    padding: 15px 46px;
-    border-radius: 32px;
-    font-size: 17px;
-    cursor: pointer;
-    box-shadow: 0 8px 28px rgba(124,58,237,0.45);
-    transition: transform 0.15s, box-shadow 0.15s;
-    letter-spacing: 0.03em;
+  #qr-uploading {
+    color: #888;
+    font-size: 13px;
+    font-family: system-ui, sans-serif;
+    display: flex;
+    align-items: center;
+    gap: 8px;
   }
-  #restart-btn:hover { transform: scale(1.06); box-shadow: 0 10px 36px rgba(124,58,237,0.6); }
+  .qr-mini-spin {
+    width: 18px; height: 18px;
+    border: 3px solid #d4e8df;
+    border-top-color: #2d6a4f;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  /* Processing overlay — shown while GPT analyses & spawns sketches */
+  #processing-overlay {
+    position: fixed;
+    inset: 0;
+    background: linear-gradient(135deg, #f8f5f0 0%, #e8f4f0 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+    z-index: 8000;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.5s ease;
+  }
+  #processing-overlay.visible {
+    opacity: 1;
+    pointer-events: all;
+  }
+  .proc-spinner {
+    width: 64px;
+    height: 64px;
+    border: 6px solid #d4e8df;
+    border-top-color: #2d6a4f;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
+  }
+  #processing-overlay h2 {
+    font-family: 'Georgia', serif;
+    color: #1b4332;
+    font-size: clamp(20px, 3vw, 30px);
+    text-align: center;
+    margin: 0;
+  }
+  #proc-status {
+    color: #555;
+    font-size: 15px;
+    font-family: system-ui, sans-serif;
+    text-align: center;
+    margin: 0;
+    transition: opacity 0.4s;
+  }
 
   /* Per-zone toolbars */
   .zone-toolbar {
@@ -463,10 +566,12 @@
   <div class="zone-result" id="result-left">
     <div class="result-category" id="cat-left"></div>
     <div class="result-label" id="label-left"></div>
+    <div class="result-orient checking" id="orient-left">⧐ checking orientation…</div>
   </div>
   <div class="zone-result" id="result-right">
     <div class="result-category" id="cat-right"></div>
     <div class="result-label" id="label-right"></div>
+    <div class="result-orient checking" id="orient-right">⧐ checking orientation…</div>
   </div>
   <button class="done-btn" id="done-left">✓ I'm Done</button>
   <button class="done-btn" id="done-right">✓ I'm Done</button>
@@ -516,6 +621,13 @@
   <div id="storyStageInner"></div>
 </div>
 
+<!-- Processing overlay (shown while GPT works between Done and animation) -->
+<div id="processing-overlay">
+  <div class="proc-spinner"></div>
+  <h2>Making your squiggles come to life…</h2>
+  <p id="proc-status">Analysing your drawings…</p>
+</div>
+
 <!-- End button (visible during animation stage) -->
 <button id="end-btn">✦ End</button>
 
@@ -524,6 +636,14 @@
   <div class="ty-squiggles">🌀</div>
   <h1>Thank you for making<br>these squiggles wiggle!</h1>
   <p>Your sketches came to life and told a story together.</p>
+
+  <!-- QR code: appears after upload completes -->
+  <div id="qr-section">
+    <div id="qr-uploading"><div class="qr-mini-spin"></div> Preparing your download…</div>
+    <div id="qr-canvas" style="display:none"></div>
+    <p id="qr-label" style="display:none">📱 Scan to download your sketch &amp; animation</p>
+  </div>
+
   <button id="restart-btn">↩ Restart</button>
 </div>
 

@@ -39,7 +39,12 @@ from heuristic_classify import heuristic_classify
 
 app = Flask(__name__, static_folder='static')
 app.config['OUTPUT_FOLDER'] = 'output_api'
+app.config['MAX_CONTENT_LENGTH'] = 200 * 1024 * 1024   # 200 MB (for video uploads)
 os.makedirs(app.config['OUTPUT_FOLDER'], exist_ok=True)
+
+# Downloads directory — each session gets its own subfolder
+DOWNLOADS_DIR = os.path.join(os.path.dirname(__file__), 'static', 'downloads')
+os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 MODEL_PATH    = "sketch_model.keras"
 CLASS_IDX_PATH = "class_indices.json"
@@ -490,9 +495,13 @@ def classify_sketch():
             {
                 "role": "system",
                 "content": (
-                    "You are an expert sketch recognizer for an animation engine.\n"
-                    "The image shows a hand-drawn sketch on a whiteboard background.\n"
-                    "Your task: identify what the drawing represents and map it to the correct animation category.\n\n"
+                    "You are an expert sketch recognizer for a creative drawing animation engine.\n"
+                    "CONTEXT: Users are given a whiteboard with a faint mountain/triangle silhouette template. "
+                    "They draw ON TOP of that template to transform it into something completely new. "
+                    "The mountain outline is just a starting prompt — the user's colored strokes define the actual object.\n"
+                    "YOUR TASK: Look at the full image and identify what the user INVENTED — what did they transform "
+                    "the shape into? Focus on the user's drawn lines, colors, and added details. "
+                    "Ignore the background mountain template silhouette.\n\n"
                     "CATEGORIES (pick exactly one):\n"
                     "  land_animal     – any animal that walks on land (dog, cat, horse, camel, elephant, lion, bear, sheep, etc.)\n"
                     "  flying_animal   – any animal that flies (bird, butterfly, bat, eagle, owl, parrot, flamingo, etc.)\n"
@@ -515,18 +524,20 @@ def classify_sketch():
                     "  clothing        – wearable items (t-shirt, hat, shoe, umbrella, sock, jacket, belt, etc.)\n"
                     "  geometric       – shapes and abstract forms (circle, triangle, square, star, spiral, diamond, etc.)\n"
                     "  electronic      – electronics and gadgets (phone, computer, TV, radio, camera, calculator, etc.)\n\n"
-                    "Respond with ONLY valid JSON (no markdown):\n"
-                    "{\"category\": \"<one of the 21 category IDs above>\", "
-                    "\"label\": \"<specific name of the object>\", "
-                    "\"description\": \"<one sentence describing key visual features for animation>\"}\n"
-                    "If ambiguous, pick the best-fit category. Never refuse."
+                    "Respond with ONLY valid JSON (no markdown, no extra text):\n"
+                    "{\"category\": \"<one of the 21 IDs above>\", "
+                    "\"label\": \"<specific common name of the invented object, e.g. 'flower', 'dog', 'rocket'>\", "
+                    "\"description\": \"<one sentence describing what the user drew and its key features>\", "
+                    "\"rotation_correction\": <integer: degrees to rotate the image clockwise so the sketch appears right-side-up; use 0 if already upright, 90 if top points left, -90 if top points right, 180 if upside-down>}\n"
+                    "If ambiguous, pick the single best-fit category. NEVER output 'sketch', 'drawing', or 'doodle' as the label. "
+                    "Always give a real object name."
                 )
             },
             {
                 "role": "user",
                 "content": [
-                    { "type": "text", "text": "What is this sketch? Reply with JSON only." },
-                    { "type": "image_url", "image_url": { "url": f"data:image/png;base64,{base64_img}", "detail": "auto" } }
+                    { "type": "text", "text": "What did the user invent/transform in this sketch? Reply with JSON only." },
+                    { "type": "image_url", "image_url": { "url": f"data:image/png;base64,{base64_img}", "detail": "high" } }
                 ]
             }
         ]
@@ -566,8 +577,21 @@ def classify_sketch():
             parsed = json.loads(cleaned)
             # Ensure all required fields present
             parsed.setdefault("category", "object")
-            parsed.setdefault("label", parsed.get("category", "sketch"))
+            parsed.setdefault("label",    parsed.get("category", "object"))
             parsed.setdefault("description", "A hand-drawn sketch.")
+            # Clamp rotation_correction to one of the four canonical values
+            raw_rot = parsed.get("rotation_correction", 0)
+            try:
+                raw_rot = int(round(float(raw_rot)))
+            except (TypeError, ValueError):
+                raw_rot = 0
+            # Snap to nearest of 0, 90, -90, 180
+            snap_map = {0: 0, 90: 90, 180: 180, -90: -90, 270: -90, -180: 180, -270: 90}
+            parsed["rotation_correction"] = snap_map.get(raw_rot, 0)
+            # Never let label be a generic fallback word — replace with category if needed
+            if parsed["label"].lower() in {"sketch", "drawing", "doodle", "image", "picture", "unknown"}:
+                parsed["label"] = parsed["category"]
+            print(f"[classify-sketch] GPT-4o → label='{parsed['label']}' category='{parsed['category']}' rotation={parsed['rotation_correction']}°")
             return jsonify(parsed)
 
     except urllib.error.HTTPError as e:
@@ -586,10 +610,20 @@ def classify_sketch():
     try:
         gemini_key = os.environ.get("GEMINI_API_KEY", "")
         if gemini_key and base64_img:
+            gemini_system = (
+                "You are a sketch recognizer. The image shows a whiteboard with a faint mountain/triangle template "
+                "that the user drew ON TOP of to transform it into something new. "
+                "Identify what the user invented. Reply ONLY with valid JSON: "
+                '{"category": "<one of: land_animal, flying_animal, aquatic_animal, insect, mythical, human_character, '
+                'plant, celestial, weather, nature_element, food, vehicle_land, vehicle_air, vehicle_water, '
+                'built_structure, tool_object, instrument, sports_object, clothing, geometric, electronic>", '
+                '"label": "<specific real object name, never write sketch/drawing/doodle>", '
+                '"description": "<one sentence>"}. Best guess always, never refuse.'
+            )
             gemini_payload = {
                 "contents": [{
                     "parts": [
-                        {"text": "Identify this hand-drawn sketch. Reply ONLY with JSON: {\"category\": \"<broad category e.g. animal, plant, vehicle, food, object>\", \"label\": \"<specific name>\", \"description\": \"<one sentence>\"}. If unclear, best guess."},
+                        {"text": gemini_system},
                         {"inline_data": {"mime_type": "image/png", "data": base64_img}}
                     ]
                 }],
@@ -610,15 +644,120 @@ def classify_sketch():
                 if gm: gem_cleaned = gm.group(0)
                 gem_parsed = json.loads(gem_cleaned)
                 gem_parsed.setdefault("category", "object")
-                gem_parsed.setdefault("label",    gem_parsed.get("category", "sketch"))
+                gem_parsed.setdefault("label",    gem_parsed.get("category", "object"))
                 gem_parsed.setdefault("description", "A hand-drawn sketch.")
-                print(f"[classify-sketch] Gemini fallback: {gem_parsed.get('label')}")
+                gem_parsed.setdefault("rotation_correction", 0)
+                if gem_parsed["label"].lower() in {"sketch", "drawing", "doodle", "image", "picture", "unknown"}:
+                    gem_parsed["label"] = gem_parsed["category"]
+                print(f"[classify-sketch] Gemini fallback → label='{gem_parsed['label']}' category='{gem_parsed['category']}' rotation={gem_parsed.get('rotation_correction', 0)}°")
                 return jsonify(gem_parsed)
     except Exception as gem_err:
         print(f"[classify-sketch] Gemini fallback failed: {gem_err}")
 
     # ── Last-resort graceful default ───────────────────────────────────────────
-    return jsonify({"category": "object", "label": "sketch", "description": "An unrecognized hand-drawn sketch."}), 200
+    # Use 'object' category (mobile, interactive) so the sketch still animates
+    print("[classify-sketch] All classifiers failed — using last-resort fallback")
+    return jsonify({"category": "object", "label": "object", "description": "An unrecognized hand-drawn sketch."}), 200
+
+
+
+# ── /api/detect-orientation ────────────────────────────────────────────────────
+@app.route("/api/detect-orientation", methods=["POST"])
+def detect_orientation():
+    """
+    Dedicated orientation detector — separate from classification so GPT can
+    focus exclusively on rotation without being distracted by labelling.
+
+    Input JSON: { image: base64DataURL, label: "butterfly" }
+    Returns:    { rotation_correction: 0|90|-90|180,
+                  confidence: "high"|"medium"|"low",
+                  reasoning: "..." }
+    """
+    data       = request.get_json(silent=True) or {}
+    image_data = data.get("image", "")
+    label      = data.get("label", "object").strip() or "object"
+
+    if not image_data:
+        return jsonify({"rotation_correction": 0, "confidence": "low", "reasoning": "No image provided"}), 200
+
+    base64_img = image_data.split("base64,")[1] if "base64," in image_data else image_data
+
+    openai_key = get_openai_key()
+    if not openai_key:
+        return jsonify({"rotation_correction": 0, "confidence": "low", "reasoning": "No API key"}), 200
+
+    system_prompt = (
+        f"You are analysing whether a hand-drawn sketch needs orientation correction.\n"
+        f"The sketch depicts: **{label}**\n\n"
+        f"CRITICAL RULE: Users almost always draw things correctly. "
+        f"Return rotation_correction=0 in the VAST MAJORITY of cases. "
+        f"Only flag a sketch if it is UNMISTAKABLY, OBVIOUSLY sideways — "
+        f"e.g. a butterfly with wings pointing up/down instead of left/right, "
+        f"or a fish drawn vertically. Even slight ambiguity means you must return 0.\n\n"
+        f"NATURAL ORIENTATIONS (use to judge):\n"
+        f"  butterfly  → wings LEFT and RIGHT — sideways only if wings point UP/DOWN\n"
+        f"  flower     → stem at BOTTOM, petals at TOP — almost always drawn correctly, do NOT rotate\n"
+        f"  fish       → body horizontal — sideways only if body is vertical\n"
+        f"  tree/plant → trunk at BOTTOM, canopy at TOP — almost always correct\n"
+        f"  person     → head at TOP, feet at BOTTOM\n"
+        f"  sun/moon/star/cloud → any orientation fine → always return 0\n"
+        f"  vehicle    → horizontal, wheels at BOTTOM\n\n"
+        f"STRICT RULES:\n"
+        f"  * Return 0 whenever you are not 100 percent certain the sketch is sideways.\n"
+        f"  * 180 degrees is EXTREMELY rare — only if unmistakably inverted.\n"
+        f"  * If the object could plausibly be drawn this way intentionally, return 0.\n"
+        f"  * confidence='high' only for the most obvious 90-degree sideways cases.\n\n"
+        f"Reply ONLY with this JSON (no markdown):\n"
+        f'{{\"rotation_correction\": <0, 90, -90, or 180>, '
+        f'\"confidence\": \"<high|medium|low>\", '
+        f'\"reasoning\": \"<one sentence>\"}}\n\n'
+        f"Values: 0=upright (DEFAULT), 90=top points left, -90=top points right, 180=upside-down.\n"
+        f"DEFAULT IS 0. WHEN IN DOUBT RETURN 0."
+    )
+
+    payload = {
+        "model": "gpt-4o",
+        "max_tokens": 120,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": [
+                {"type": "text", "text": f"Is this {label} oriented correctly? Reply with JSON only."},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64_img}", "detail": "high"}},
+            ]},
+        ],
+    }
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {openai_key}"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as response:
+            result  = json.loads(response.read().decode())
+            content = result["choices"][0]["message"].get("content", "")
+            cleaned = re.search(r"\{.*\}", content, re.DOTALL)
+            if cleaned:
+                parsed = json.loads(cleaned.group(0))
+            else:
+                raise ValueError("No JSON in GPT response")
+
+            # Snap to canonical values
+            raw_rot = int(round(float(parsed.get("rotation_correction", 0))))
+            snap    = {0: 0, 90: 90, -90: -90, 180: 180, 270: -90, -180: 180, -270: 90}
+            rot     = snap.get(raw_rot, 0)
+
+            confidence = parsed.get("confidence", "medium")
+            reasoning  = parsed.get("reasoning", "")
+
+            print(f"[detect-orientation] '{label}' → {rot}° ({confidence}) — {reasoning}")
+            return jsonify({"rotation_correction": rot, "confidence": confidence, "reasoning": reasoning})
+
+    except Exception as e:
+        print(f"[detect-orientation] GPT error for '{label}': {e}")
+        return jsonify({"rotation_correction": 0, "confidence": "low", "reasoning": f"Detection failed: {e}"}), 200
 
 
 
@@ -1164,6 +1303,127 @@ def animated_drawings_endpoint():
     except Exception as e2:
         print(f"[animated-drawings] skeletal fallback failed: {e2}")
         return jsonify({"isSkeletal": False, "frames": []}), 200
+
+
+# ── /api/save-assets ───────────────────────────────────────────────────────────
+@app.route('/api/save-assets', methods=['POST'])
+def save_assets():
+    """
+    Receives multipart/form-data with optional fields:
+      screenshot  – PNG file (the Konva stage snapshot)
+      video       – WebM / MP4 file (the recorded animation)
+    Returns { session_id, png_url, video_url, download_page }
+    """
+    session_id  = uuid.uuid4().hex[:8]
+    session_dir = os.path.join(DOWNLOADS_DIR, session_id)
+    os.makedirs(session_dir, exist_ok=True)
+
+    png_url   = None
+    video_url = None
+
+    screenshot = request.files.get('screenshot')
+    if screenshot:
+        screenshot.save(os.path.join(session_dir, 'sketch.png'))
+        png_url = f'/static/downloads/{session_id}/sketch.png'
+        print(f'[save-assets] PNG saved → {png_url}')
+
+    video = request.files.get('video')
+    if video:
+        mime = video.content_type or ''
+        ext  = 'mp4' if 'mp4' in mime else 'webm'
+        video.save(os.path.join(session_dir, f'animation.{ext}'))
+        video_url = f'/static/downloads/{session_id}/animation.{ext}'
+        print(f'[save-assets] video saved → {video_url}')
+
+    return jsonify({
+        'session_id':    session_id,
+        'png_url':       png_url,
+        'video_url':     video_url,
+        'download_page': f'/download/{session_id}',
+    })
+
+
+# ── /download/<session_id> ─────────────────────────────────────────────────────
+@app.route('/download/<session_id>')
+def download_page(session_id):
+    """Mobile-friendly download page served when users scan the QR code."""
+    session_dir = os.path.join(DOWNLOADS_DIR, session_id)
+    if not os.path.isdir(session_dir):
+        return '<h2>Session not found.</h2>', 404
+
+    png_path   = os.path.join(session_dir, 'sketch.png')
+    webm_path  = os.path.join(session_dir, 'animation.webm')
+    mp4_path   = os.path.join(session_dir, 'animation.mp4')
+
+    png_url   = f'/static/downloads/{session_id}/sketch.png'   if os.path.exists(png_path)  else None
+    video_url = (f'/static/downloads/{session_id}/animation.mp4'  if os.path.exists(mp4_path)
+                 else f'/static/downloads/{session_id}/animation.webm' if os.path.exists(webm_path)
+                 else None)
+    video_ext = 'mp4' if (video_url and 'mp4' in video_url) else 'webm'
+
+    png_btn = f'''
+      <a class="dl-btn" href="{png_url}" download="squiggle_sketch.png">
+        🖼 Download Sketch (PNG)
+      </a>''' if png_url else ''
+
+    vid_btn = f'''
+      <a class="dl-btn" href="{video_url}" download="squiggle_animation.{video_ext}">
+        🎬 Download Animation ({video_ext.upper()})
+      </a>''' if video_url else ''
+
+    preview = f'<img src="{png_url}" alt="Your sketch" style="max-width:100%;border-radius:16px;box-shadow:0 4px 20px rgba(0,0,0,.1);margin-bottom:12px;">' if png_url else ''
+
+    return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Your SquiggleWiggle</title>
+  <style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: Georgia, serif;
+      background: linear-gradient(135deg, #f8f5f0, #e8f4f0);
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+    }}
+    .card {{
+      background: #fff;
+      border-radius: 24px;
+      padding: 36px 32px;
+      max-width: 480px;
+      width: 92%;
+      text-align: center;
+      box-shadow: 0 8px 40px rgba(0,0,0,.12);
+    }}
+    h1 {{ color: #1b4332; font-size: 26px; margin-bottom: 6px; }}
+    .sub {{ color: #555; font-size: 14px; margin-bottom: 24px; font-family: system-ui, sans-serif; }}
+    .preview {{ margin-bottom: 20px; }}
+    .dl-btn {{
+      display: block;
+      background: #2d6a4f;
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 20px;
+      border-radius: 28px;
+      font-size: 16px;
+      margin: 10px auto;
+      box-shadow: 0 4px 14px rgba(45,106,79,.3);
+      transition: transform .15s;
+    }}
+    .dl-btn:hover {{ transform: scale(1.03); }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Your Squiggle Wiggle ✨</h1>
+    <p class="sub">Thanks for creating! Tap below to save your sketch and animation.</p>
+    <div class="preview">{preview}</div>
+    {png_btn}
+    {vid_btn}
+  </div>
+</body>
+</html>'''
 
 
 if __name__ == "__main__":

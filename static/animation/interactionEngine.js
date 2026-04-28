@@ -81,26 +81,33 @@ export class InteractionEngine {
   _tickWander(agents) {
     const now = Date.now();
     const W = this.canvasW, H = this.canvasH;
-    const margin = 160;   // safe inset from canvas edge for all wander targets
+    const margin = 220;   // safe inset from canvas edge for wander targets
+                          // (must be ≥ largest preset oscillation amplitude so
+                          //  the sketch never reaches the clamped boundary mid-swing)
 
     for (const agent of agents) {
       if (!agent.hasTag('mobile')) continue;
       if (agent.hasTag('anchored')) continue;
       if (agent.behaviorOverride === 'stay') continue;
-      if (agent.state !== 'idle') continue;
 
-      // ── Out-of-bounds rescue ──────────────────────────────────────────────
-      // If the agent escaped the canvas (e.g. from a flee beat), immediately
-      // redirect it back to the center so it walks back into view.
+      // ── Out-of-bounds rescue (runs for ALL states) ───────────────────────
+      // Fires the moment the sketch center crosses the canvas boundary.
+      // setPosition() now hard-clamps so this is mainly a safety net for
+      // cases where originPos itself drifts out of bounds.
       const curPos = agent.adapter.getPosition();
-      const oob = curPos.x < -50 || curPos.x > W + 50 ||
-                  curPos.y < -50 || curPos.y > H + 50;
-      if (oob) {
-        const rescueX = W / 2 + (Math.random() - 0.5) * 100;
-        const rescueY = H / 2 + (Math.random() - 0.5) * 100;
-        if (!agent._wander) agent._wander = {};
-        Object.assign(agent._wander, { tx: rescueX, ty: rescueY, nextPickTime: 0, headingToPartner: false });
+      if (curPos.x < 0 || curPos.x > W || curPos.y < 0 || curPos.y > H) {
+        const rx = W / 2 + (Math.random() - 0.5) * Math.min(200, W * 0.3);
+        const ry = H / 2 + (Math.random() - 0.5) * Math.min(100, H * 0.2);
+        agent.adapter.setPosition(rx, ry);
+        agent.originPos = { x: rx, y: ry };
+        agent.state = 'idle';
+        agent._wander = { tx: rx, ty: ry, nextPickTime: 0, headingToPartner: false };
+        this.controller.startIdle(agent);
+        console.log(`[OOB] rescued "${agent.label}" → (${rx.toFixed(0)}, ${ry.toFixed(0)})`);
+        continue;
       }
+
+      if (agent.state !== 'idle') continue;
 
       if (!agent._wander) {
         const partner = agents.find(a => a.id !== agent.id);

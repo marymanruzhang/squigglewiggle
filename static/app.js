@@ -60,6 +60,8 @@ const catLeft     = document.getElementById('cat-left');
 const catRight    = document.getElementById('cat-right');
 const labelLeft   = document.getElementById('label-left');
 const labelRight  = document.getElementById('label-right');
+const orientLeft  = document.getElementById('orient-left');
+const orientRight = document.getElementById('orient-right');
 const saveAllBtn  = document.getElementById('save-all-btn');
 
 // ─── Canvas resize ───────────────────────────────────────────────────────────
@@ -382,36 +384,87 @@ async function analyzeZone(zone) {
   const btn  = zone === 'left' ? doneLeft  : doneRight;
   const spin = zone === 'left' ? spinLeft  : spinRight;
   const res  = zone === 'left' ? resultLeft : resultRight;
-  const catEl  = zone === 'left' ? catLeft  : catRight;
-  const lblEl  = zone === 'left' ? labelLeft : labelRight;
+  const catEl    = zone === 'left' ? catLeft    : catRight;
+  const lblEl    = zone === 'left' ? labelLeft  : labelRight;
+  const orientEl = zone === 'left' ? orientLeft : orientRight;
 
   btn.disabled = true;
   spin.classList.add('visible');
 
-  // Capture full composite (mountain SVG template + user strokes) for both
-  // classification and animation. GPT-4o handles the background fine, and
-  // including the mountain gives it crucial context for what was "invented".
+  // Capture full composite (mountain SVG template + user strokes)
   const zoneCanvas = await captureZoneCanvas(zone, false);
   state.snapshots = state.snapshots || {};
   state.snapshots[zone] = zoneCanvas;
   const dataUrl = zoneCanvas.toDataURL('image/png');
 
   try {
+    // ── Step 1: Classify (label + category + initial rotation hint) ─────────
     const result = await identifyDoodle(dataUrl);
     console.log(`%c[classify] "${zone}" → ${result.label} (${result.category})`, 'color:#2d6a4f;font-weight:bold');
-    state.results[zone] = result;
-    state.submitted[zone] = true;
 
-    const zoneEl = zone === 'left' ? zoneLeft : zoneRight;
-    zoneEl.classList.add('submitted');
-
-    catEl.textContent  = result.category;
-    lblEl.textContent  = result.label;
+    // Show label/category immediately so users see something while orientation runs
+    catEl.textContent = result.category;
+    lblEl.textContent = result.label;
     res.classList.add('visible');
     spin.classList.remove('visible');
 
+    // ── Step 2: Dedicated orientation detection (runs with the label as context) ─
+    // This is a separate focused GPT call — much more reliable than baking
+    // orientation into the classify prompt because GPT can reason specifically
+    // about whether THIS label is rotated (e.g. "a butterfly should have wings
+    // spread horizontally") rather than guessing from a generic description.
+    if (orientEl) {
+      orientEl.textContent = '⧐ checking orientation…';
+      orientEl.className = 'result-orient checking';
+    }
+
+    // Fire orientation detection — don't block the UI, update badge when done
+    detectSketchOrientation(dataUrl, result.label).then(orient => {
+      const rawRot  = orient?.rotation_correction ?? 0;
+      const conf    = orient?.confidence ?? 'low';
+
+      // ── Confidence gate: only apply the correction if GPT is highly confident ──
+      // 'medium' or 'low' confidence means the sketch is probably fine as-is.
+      // A wrong rotation (like flipping a flower upside-down) is worse than
+      // leaving a slightly sideways sketch alone.
+      const rot = (conf === 'high' && rawRot !== 0) ? rawRot : 0;
+
+      // Override the classify-supplied rotation_correction with the dedicated result
+      result.rotation_correction = rot;
+
+      console.log(
+        `%c[orient] "${result.label}" rawRot=${rawRot}° conf=${conf} → applied=${rot}° — ${orient?.reasoning ?? ''}`,
+        'color:#d97706;font-weight:bold'
+      );
+
+      // Update orientation badge
+      if (orientEl) {
+        if (rot === 0 && rawRot !== 0) {
+          // GPT detected something but not confident enough — leave upright
+          orientEl.textContent = `✓ Upright (${conf} confidence — not corrected)`;
+          orientEl.className = 'result-orient upright';
+        } else if (rot === 0) {
+          orientEl.textContent = '✓ Upright';
+          orientEl.className = 'result-orient upright';
+        } else {
+          const arrow = rot === 90 ? '↻ 90°' : rot === -90 ? '↺ 90°' : '⇅ 180°';
+          orientEl.textContent = `${arrow} — will be corrected`;
+          orientEl.className = 'result-orient rotated';
+        }
+      }
+    }).catch(err => {
+      console.warn('[orient] detection failed, using classify fallback:', err);
+      if (orientEl) { orientEl.textContent = '✓ Upright (assumed)'; orientEl.className = 'result-orient upright'; }
+    });
+
+    // ── Step 3: Store result (orientation will be updated async above) ──────
+    state.results[zone] = result;
+    state.submitted[zone] = true;
+    document.getElementById(`zone-${zone}`)?.classList.add('submitted');
+
     if (state.submitted.left && state.submitted.right) {
-      setTimeout(() => transitionToAnimationStage(), 1000);
+      // Wait a moment so orientation detection can finish before transition
+      setTimeout(() => transitionToAnimationStage(), 1200);
     }
 
     checkSaveAll();
@@ -422,6 +475,22 @@ async function analyzeZone(zone) {
     state.analyzing[zone] = false;
     console.error('[classify] Analysis failed:', e);
     setStatus('⚠ API error – check console');
+  }
+}
+
+// ─── Dedicated orientation detection ──────────────────────────────────────────
+async function detectSketchOrientation(dataUrl, label) {
+  try {
+    const resp = await fetch('/api/detect-orientation', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: dataUrl, label }),
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  } catch (err) {
+    console.warn(`[orient] API call failed for "${label}":`, err);
+    return { rotation_correction: 0, confidence: 'low', reasoning: 'API error' };
   }
 }
 
@@ -618,6 +687,29 @@ let konvaStage = null;
 let konvaLayer = null;
 
 async function transitionToAnimationStage() {
+
+  // ── Processing overlay: show immediately so users know work is happening ──
+  const procOverlay  = document.getElementById('processing-overlay');
+  const procStatus   = document.getElementById('proc-status');
+  const statusMessages = [
+    'Analysing your drawings…',
+    'Asking the AI what you invented…',
+    'Figuring out how big things should be…',
+    'Writing the story of your sketches…',
+    'Teaching your sketches to move…',
+    'Almost ready…',
+  ];
+  let _statusIdx = 0;
+  if (procOverlay) procOverlay.classList.add('visible');
+  const _statusInterval = setInterval(() => {
+    _statusIdx = (_statusIdx + 1) % statusMessages.length;
+    if (procStatus) {
+      procStatus.style.opacity = '0';
+      setTimeout(() => {
+        if (procStatus) { procStatus.textContent = statusMessages[_statusIdx]; procStatus.style.opacity = '1'; }
+      }, 200);
+    }
+  }, 2800);
 
   // ── Step 1: Capture BEFORE hiding (zones must still be visible in DOM) ──
   const leftSnap  = await captureZoneCanvas('left');
@@ -843,11 +935,34 @@ async function transitionToAnimationStage() {
     }
   }
 
-  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, targetH) {
+  // ── Canvas pre-rotation helper ────────────────────────────────────────────
+  // Rotates a canvas by `degrees` (clockwise) and returns a new canvas.
+  // We pre-rotate the source image rather than rotating the Konva group so
+  // there are no pivot/offset issues regardless of how buildPartGroup lays out
+  // its children.
+  function rotateCanvas(src, degrees) {
+    const d = [0, 90, -90, 180].includes(degrees) ? degrees : 0;
+    if (!d) return src;                             // 0° → no-op
+    const transposed = d === 90 || d === -90;
+    const out = document.createElement('canvas');
+    out.width  = transposed ? src.height : src.width;
+    out.height = transposed ? src.width  : src.height;
+    const ctx = out.getContext('2d');
+    ctx.translate(out.width / 2, out.height / 2);
+    ctx.rotate(d * Math.PI / 180);
+    ctx.drawImage(src, -src.width / 2, -src.height / 2);
+    return out;
+  }
+
+  async function spawnSketch(snap, parts, label, category, cx, cy, agentId, targetH, rotationDeg = 0) {
+    // Pre-rotate canvas so buildPartGroup always gets an upright image
+    const correctedSnap = rotateCanvas(snap, rotationDeg);
+    if (rotationDeg) console.log(`[rotation] "${label}" corrected by ${rotationDeg}° (canvas pre-rotated)`);
+
     // Fetch AI-determined fill color before building — ensures vivid color on first render
     const fillColor = await fetchSketchColor(label);
     // Pass overrideScale=1.0 → buildPartGroup returns naturalW/naturalH at 1:1
-    const result = await buildPartGroup(snap, parts, cx, cy, agentId, konvaLayer, category, label, 1.0, fillColor);
+    const result = await buildPartGroup(correctedSnap, parts, cx, cy, agentId, konvaLayer, category, label, 1.0, fillColor);
 
     if (!result || !result.naturalH || result.naturalH < 1) {
       console.warn(`[scaling] buildPartGroup failed for "${label}", using flat fallback`);
@@ -864,32 +979,33 @@ async function transitionToAnimationStage() {
       return fbResult;
     }
 
-    // Compute unified scale: target display height ÷ natural pixel height
+    // Compute unified scale: target display height ÷ natural pixel height.
+    // correctedSnap already has the right dimensions (w/h swapped for 90°).
     const finalScale = targetH
       ? Math.min(10, Math.max(0.05, targetH / result.naturalH))
       : 1.0;
 
-    // Apply scale uniformly
+    // Apply scale uniformly (NO group.rotation needed — canvas is already upright)
     result.group.scaleX(finalScale);
     result.group.scaleY(finalScale);
 
-    // Re-center the group at (cx, cy) after scaling
+    // Re-centre at (cx, cy)
     result.group.x(cx);
     result.group.y(cy);
 
     const displayW = result.naturalW * finalScale;
     const displayH = result.naturalH * finalScale;
 
-    // Store as the PERMANENT base scale — nothing changes this after spawn.
-    // storyRunner resets to this value after every beat to prevent drift.
+    // Permanent base values — storyRunner restores these after every beat
     result.group._baseScale    = finalScale;
-    result.group._scaleLocked  = true;   // debug sentinel
+    result.group._baseRotation = 0;          // canvas is already oriented
+    result.group._scaleLocked  = true;
     result.w = displayW;
     result.h = displayH;
 
     console.log(
       `[scaling] "${label}" naturalH=${result.naturalH.toFixed(0)}px` +
-      ` × scale=${finalScale.toFixed(3)} → display=${displayH.toFixed(0)}px tall`
+      ` × ${finalScale.toFixed(3)} → ${displayH.toFixed(0)}px tall`
     );
 
     konvaLayer.batchDraw();
@@ -897,8 +1013,8 @@ async function transitionToAnimationStage() {
   }
 
   const [lg, rg] = await Promise.all([
-    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W*0.25, H*0.5, 'agent_left',  leftTargetH),
-    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W*0.75, H*0.5, 'agent_right', rightTargetH),
+    spawnSketch(leftSnap,  leftParts,  lR.label, lR.category, W*0.25, H*0.5, 'agent_left',  leftTargetH,  lR.rotation_correction ?? 0),
+    spawnSketch(rightSnap, rightParts, rR.label, rR.category, W*0.75, H*0.5, 'agent_right', rightTargetH, rR.rotation_correction ?? 0),
   ]);
 
   if (!lg || !rg) {
@@ -988,6 +1104,13 @@ async function transitionToAnimationStage() {
 
   document.body.appendChild(dock);
 
+  // ── Hide processing overlay, reveal animation ─────────────────────────────
+  if (procOverlay) {
+    clearInterval(_statusInterval);
+    procOverlay.style.opacity = '0';
+    setTimeout(() => procOverlay.classList.remove('visible'), 500);
+  }
+
   console.log(`[SquiggleWiggle] "${lR.label}" × "${rR.label}" — animation started`);
 
   // Show the End button (it's now inside the dock)
@@ -995,22 +1118,115 @@ async function transitionToAnimationStage() {
   if (endBtnAnim) endBtnAnim.classList.add('visible');
 
   setTimeout(() => startInteractionEngine(), 800);
+
+  // Start recording the Konva canvas for the video download
+  startAnimationRecording();
+}
+
+// ─── Recording ─────────────────────────────────────────────────────────────────
+let _mediaRecorder  = null;
+let _recordedChunks = [];
+
+function startAnimationRecording() {
+  try {
+    if (!konvaStage) return;
+    const canvas = konvaStage.container().querySelector('canvas');
+    if (!canvas || !canvas.captureStream) return;
+
+    const stream   = canvas.captureStream(30);
+    const mimeType = ['video/mp4', 'video/webm;codecs=vp9', 'video/webm']
+      .find(t => MediaRecorder.isTypeSupported(t)) || '';
+    if (!mimeType) { console.warn('[rec] no supported MIME type'); return; }
+
+    _recordedChunks = [];
+    _mediaRecorder  = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 2_500_000 });
+    _mediaRecorder.ondataavailable = e => { if (e.data.size > 0) _recordedChunks.push(e.data); };
+    _mediaRecorder.start(200);
+    console.log(`[rec] recording started (${mimeType})`);
+  } catch (err) {
+    console.warn('[rec] failed to start:', err);
+  }
+}
+
+function stopRecordingGetBlob() {
+  return new Promise(resolve => {
+    if (!_mediaRecorder || _mediaRecorder.state === 'inactive') return resolve(null);
+    _mediaRecorder.onstop = () =>
+      resolve(new Blob(_recordedChunks, { type: _mediaRecorder.mimeType || 'video/webm' }));
+    _mediaRecorder.stop();
+  });
 }
 
 // ─── End / Thank-you screen ───────────────────────────────────────────────────
-const endBtn     = document.getElementById('end-btn');
-const tyScreen   = document.getElementById('thankyou-screen');
-const restartBtn = document.getElementById('restart-btn');
+const endBtn      = document.getElementById('end-btn');
+const tyScreen    = document.getElementById('thankyou-screen');
+const restartBtn  = document.getElementById('restart-btn');
+const qrSection   = document.getElementById('qr-section');
+const qrCanvas    = document.getElementById('qr-canvas');
+const qrLabel     = document.getElementById('qr-label');
+const qrUploading = document.getElementById('qr-uploading');
 
 if (endBtn && tyScreen) {
-  endBtn.addEventListener('click', () => {
+  endBtn.addEventListener('click', async () => {
+    // 1. Show thank-you screen immediately — don't block on upload
     tyScreen.classList.add('visible');
     endBtn.classList.remove('visible');
+    if (qrSection) qrSection.classList.add('visible');
+
+    // 2. Capture Konva screenshot
+    let screenshotBlob = null;
+    if (konvaStage) {
+      try {
+        const dataUrl = konvaStage.toDataURL({ mimeType: 'image/png', pixelRatio: 1 });
+        screenshotBlob = await fetch(dataUrl).then(r => r.blob());
+      } catch (e) { console.warn('[qr] screenshot failed:', e); }
+    }
+
+    // 3. Stop recording and collect video blob
+    const videoBlob = await stopRecordingGetBlob();
+
+    // 4. Upload both to server
+    try {
+      const form = new FormData();
+      if (screenshotBlob) form.append('screenshot', screenshotBlob, 'sketch.png');
+      if (videoBlob) {
+        const ext = videoBlob.type.includes('mp4') ? 'mp4' : 'webm';
+        form.append('video', videoBlob, `animation.${ext}`);
+      }
+
+      const resp = await fetch('/api/save-assets', { method: 'POST', body: form });
+      const data = await resp.json();
+
+      // 5. Build full URL using the same host the browser used
+      //    (using window.location.host means QR works on phones on the same LAN)
+      const downloadUrl = `${window.location.protocol}//${window.location.host}${data.download_page}`;
+      console.log('[qr] download URL:', downloadUrl);
+
+      // 6. Generate QR code (qrcode-generator — 100% client-side, no CDN at scan time)
+      if (qrCanvas && typeof qrcode !== 'undefined') {
+        const qr = qrcode(0, 'M');
+        qr.addData(downloadUrl);
+        qr.make();
+        qrCanvas.innerHTML = qr.createImgTag(4, 8, 'QR code');
+        const img = qrCanvas.querySelector('img');
+        if (img) { img.style.borderRadius = '10px'; img.style.maxWidth = '180px'; }
+      }
+
+      // 7. Swap spinner → QR code + label
+      if (qrUploading) qrUploading.style.display = 'none';
+      if (qrCanvas)    qrCanvas.style.display     = 'block';
+      if (qrLabel)     qrLabel.style.display      = 'block';
+
+    } catch (err) {
+      console.error('[qr] upload/QR failed:', err);
+      if (qrUploading) qrUploading.textContent = '⚠ Download unavailable.';
+    }
   });
 }
 
 if (restartBtn) {
   restartBtn.addEventListener('click', () => {
+    if (_mediaRecorder && _mediaRecorder.state !== 'inactive') _mediaRecorder.stop();
     window.location.reload();
   });
 }

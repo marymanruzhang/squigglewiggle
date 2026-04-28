@@ -163,12 +163,13 @@ export async function runStory(plan, controller) {
     source.adapter.setRotation(0);
     target.adapter.setRotation(0);
 
-    // ── Scale lock: always restore exact spawnScale after every story ─────────
-    // This is the safety net that guarantees consistent sizing regardless of
-    // what scale tweens the beat animations used.
+    // ── Scale + rotation lock: always restore exact spawn values after every story ─
+    // Safety net: no beat animation can permanently alter size or orientation.
     for (const agent of [source, target]) {
-      const locked = agent.spawnScale ?? 1;
+      const locked    = agent.spawnScale ?? 1;
+      const lockedRot = agent.layerRef?._baseRotation ?? 0;
       agent.adapter.setScale(locked);
+      agent.adapter.setRotation(lockedRot);
     }
 
     // ── Out-of-bounds recovery ────────────────────────────────────────────────

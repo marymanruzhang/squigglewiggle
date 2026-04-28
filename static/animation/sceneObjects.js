@@ -72,8 +72,32 @@ export class LayerAdapter {
     }
   }
 
+  // ── Bounds (set from SceneAgent so setPosition can clamp) ────────────────
+  /**
+   * Call once after the sketch is spawned to provide its display half-sizes.
+   * After this, every setPosition() call is clamped so the sketch can never
+   * wander off-screen, regardless of which preset or beat tries to move it.
+   *
+   * @param {number} halfW  Half the display width  in pixels (including scale)
+   * @param {number} halfH  Half the display height in pixels (including scale)
+   */
+  setBounds(halfW, halfH) {
+    this._halfW = Math.max(1, halfW);
+    this._halfH = Math.max(1, halfH);
+  }
+
   // ── Position ───────────────────────────────────────────────────────────────
   setPosition(x, y) {
+    // ── Hard canvas clamp ────────────────────────────────────────────────────
+    // Runs every frame for every position write. halfW/halfH are the sketch's
+    // display radius; the 20 px pad keeps the sketch visually inside the edge.
+    if (this._halfW !== undefined) {
+      const W   = window.innerWidth;
+      const H   = window.innerHeight;
+      const pad = 20;
+      x = Math.max(this._halfW + pad, Math.min(W - this._halfW - pad, x));
+      y = Math.max(this._halfH + pad, Math.min(H - this._halfH - pad, y));
+    }
     this._x = x; this._y = y;
     if (this.library === 'konva') {
       this.ref.x(x); this.ref.y(y);
@@ -207,6 +231,15 @@ export class SceneAgent {
     }
 
     this.adapter = new LayerAdapter(layerRef);
+
+    // Tell the adapter the sketch's on-screen half-sizes so setPosition() can
+    // clamp every frame and the sketch never wanders off-screen.
+    // bbox.width/height are the actual display pixel dimensions (post-scale).
+    if (bbox && (bbox.width || bbox.height)) {
+      const halfW = (bbox.width  || 100) / 2;
+      const halfH = (bbox.height || 100) / 2;
+      this.adapter.setBounds(halfW, halfH);
+    }
 
     const pos = this.adapter.getPosition();
     this.originPos = { x: pos.x, y: pos.y };

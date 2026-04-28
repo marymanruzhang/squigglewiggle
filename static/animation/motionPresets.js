@@ -97,10 +97,9 @@ export function wave(agent, params = {}) {
 export function sway_bloom(agent, params = {}) {
   const { amplitude = 8, speed = 0.5, bloomAmplitude = 0.07, bloomSpeed = 0.8 } = params;
   const base   = agent.spawnScale ?? agent.adapter._scaleX ?? 1;
-  const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
+    const origin = agent.originPos;   // dynamic — wander updates this
     agent.adapter.setRotation(amplitude * Math.sin(2 * Math.PI * t * speed));
-    // bloom oscillates around spawnScale, not around 1.0
     agent.adapter.setScale(base * (1 + bloomAmplitude * Math.sin(2 * Math.PI * t * bloomSpeed)));
     agent.adapter.setPosition(origin.x, origin.y);
   });
@@ -328,10 +327,9 @@ export function fly(agent, params = {}) {
 
 export function zigzag_fly(agent, params = {}) {
   const { xAmp = 70, yAmp = 28, speed = 0.7 } = params;
-  const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
+    const origin = agent.originPos;   // dynamic — wander can steer this
     const phase = (t * speed) % 1;
-    // Sawtooth x, sine y
     const x = origin.x + xAmp * (2 * phase - 1);
     const y = origin.y + yAmp * Math.sin(4 * Math.PI * t * speed);
     agent.adapter.setPosition(x, y);
@@ -340,10 +338,10 @@ export function zigzag_fly(agent, params = {}) {
 }
 
 export function orbit(agent, params = {}) {
-  // Orbit around the agent's own origin position
+  // Orbit around the agent's current wander position (dynamic — follows wander)
   const { radius = 60, speed = 0.4 } = params;
-  const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
+    const origin = agent.originPos;   // dynamic — wander updates this
     const angle = 2 * Math.PI * t * speed;
     agent.adapter.setPosition(origin.x + radius * Math.cos(angle), origin.y + radius * Math.sin(angle));
   });
@@ -390,8 +388,8 @@ export function side_shuffle(agent, params = {}) {
 
 export function drift(agent, params = {}) {
   const { speed = 0.2, range = 120 } = params;
-  const origin = agent.adapter.getPosition();
   return oneshotOrLoop(agent, params, t => {
+    const origin = agent.originPos;   // dynamic — wander updates this
     agent.adapter.setPosition(origin.x + range * Math.sin(2 * Math.PI * t * speed), origin.y);
   });
 }
