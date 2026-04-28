@@ -1480,6 +1480,30 @@ def download_page(session_id):
 </html>'''
 
 
+
 if __name__ == "__main__":
-    print("\n  SquiggleWiggle — open http://localhost:5001 in your browser\n")
+    import socket as _socket
+    # Auto-detect the machine's LAN IP so the operator knows what URL to open.
+    # The QR code on the end-screen will encode this same address, letting
+    # phones on the same WiFi scan and download their animation.
+    try:
+        _s = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+        _s.connect(("8.8.8.8", 80))
+        _lan_ip = _s.getsockname()[0]
+        _s.close()
+    except Exception:
+        _lan_ip = "127.0.0.1"
+
+    print("\n" + "=" * 60)
+    print("  SquiggleWiggle is starting…")
+    print("=" * 60)
+    print(f"\n  Operator browser  →  http://localhost:5001")
+    print(f"  Phone / tablet    →  http://{_lan_ip}:5001")
+    print(f"\n  ⚠  Open the app using the NETWORK URL above")
+    print(f"     (http://{_lan_ip}:5001) so the QR code")
+    print(f"     encodes the right address for phones to scan.")
+    print(f"\n  Both the computer and phones must be on the")
+    print(f"  SAME Wi-Fi network.")
+    print("\n" + "=" * 60 + "\n")
+
     app.run(host="0.0.0.0", port=5001, debug=True)
