@@ -1268,28 +1268,47 @@ async function transitionToAnimationStage() {
     'pointer-events:none',
   ].join(';');
 
+  // Always create the narrative bubble — storyRunner updates it as beats fire.
+  // If sceneDesc provided an opening line, show it faintly as a preview.
+  // Once story beats start, squiggleSetNarrative() swaps to the real beat text.
+  const nb = document.createElement('div');
+  nb.id = 'scene-narrative';
+  nb.style.cssText = [
+    'background:rgba(20,10,40,0.82)',
+    'color:#fff',
+    'padding:11px 26px',
+    'border-radius:24px',
+    'font-family:system-ui,sans-serif',
+    'font-size:15px',
+    'pointer-events:none',
+    'max-width:65vw',
+    'text-align:center',
+    'line-height:1.5',
+    'letter-spacing:0.01em',
+    'opacity:0',
+    'transition:opacity 0.5s',
+  ].join(';');
+
   if (sceneDesc?.narrative) {
-    const nb = document.createElement('div');
-    nb.id = 'scene-narrative';
-    nb.style.cssText = [
-      'background:rgba(20,10,40,0.82)',
-      'color:#fff',
-      'padding:11px 26px',
-      'border-radius:24px',
-      'font-family:system-ui,sans-serif',
-      'font-size:15px',
-      'pointer-events:none',
-      'max-width:65vw',
-      'text-align:center',
-      'line-height:1.5',
-      'letter-spacing:0.01em',
-      'opacity:0',
-      'transition:opacity 0.6s',
-    ].join(';');
     nb.textContent = '💬 ' + sceneDesc.narrative;
-    dock.appendChild(nb);
-    requestAnimationFrame(() => { nb.style.opacity = '1'; });
+    requestAnimationFrame(() => { nb.style.opacity = '0.55'; }); // faint preview
   }
+  dock.appendChild(nb);
+
+  // ── Global narrative update function ─────────────────────────────────────────
+  // Called by storyRunner.js the moment story beats begin executing.
+  // The text fades out, swaps content, then fades back in brightly — so users
+  // always see text that matches what's visually happening on screen.
+  window.squiggleSetNarrative = function(text) {
+    const el = document.getElementById('scene-narrative');
+    if (!el || !text) return;
+    el.style.transition = 'opacity 0.3s';
+    el.style.opacity = '0';
+    setTimeout(() => {
+      el.textContent = '💬 ' + text;
+      el.style.opacity = '1';           // full opacity — this is the real story
+    }, 310);
+  };
 
   // Move the End button inside the dock so it sits below the narrative
   const endBtnEl = document.getElementById('end-btn');

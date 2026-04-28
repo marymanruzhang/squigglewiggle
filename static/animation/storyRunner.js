@@ -25,6 +25,48 @@ import { getBeat } from './storyBeatAnimations.js';
 import { recordCooldown } from './storyPlanner.js';
 import { wait } from './motionPresets.js';
 
+// ─── Narrative helpers ────────────────────────────────────────────────────────
+
+/**
+ * Build a human-readable narrative for a story plan.
+ * Preference order:
+ *   1. plan.liveStory.narrative  (GPT-written, label-specific)
+ *   2. Interaction-type template with real agent labels
+ *   3. Generic fallback
+ */
+function _narrativeForPlan(plan) {
+  // 1. GPT live-story narrative (best — generated for this exact pair)
+  if (plan.liveStory?.narrative) return plan.liveStory.narrative;
+
+  // 2. Derive from template id / interaction type
+  const src = plan.source?.label ?? 'one';
+  const tgt = plan.target?.label ?? 'the other';
+  const id  = (plan.id ?? '').toLowerCase();
+
+  if (id.includes('greet') || id.includes('meet'))   return `The ${src} approaches the ${tgt} to say hello.`;
+  if (id.includes('chase') || id.includes('run'))    return `The ${src} gives chase as the ${tgt} tries to escape!`;
+  if (id.includes('avoid') || id.includes('flee'))   return `The ${src} keeps its distance from the ${tgt}.`;
+  if (id.includes('shelter') || id.includes('hide')) return `The ${src} takes shelter beside the ${tgt}.`;
+  if (id.includes('admire'))   return `The ${src} pauses to admire the ${tgt}.`;
+  if (id.includes('play'))     return `The ${src} and ${tgt} enjoy a playful moment together.`;
+  if (id.includes('orbit') || id.includes('walk_around')) return `The ${src} circles curiously around the ${tgt}.`;
+  return `The ${src} and ${tgt} share a peaceful moment.`;
+}
+
+/** Beat types that warrant a mid-beat narrative update (action is clearly visible). */
+const BEAT_NARRATIVES = {
+  noticeTarget:     (src, tgt) => `The ${src} notices the ${tgt}…`,
+  approachTarget:   (src, tgt) => `The ${src} makes its way toward the ${tgt}.`,
+  approachWithCurve:(src, tgt) => `The ${src} curves gracefully toward the ${tgt}.`,
+  fleeFromTarget:   (src, tgt) => `The ${tgt} dashes away from the ${src}!`,
+  chaseTarget:      (src, tgt) => `The ${src} gives chase!`,
+  orbitTarget:      (src, tgt) => `The ${src} circles around the ${tgt}.`,
+  hideUnderShelter: (src, tgt) => `The ${src} nestles in close to the ${tgt}.`,
+  growOrBloom:      (src, tgt) => `The ${tgt} blossoms in response.`,
+  happyBounce:      (src, tgt) => `The ${src} bounces with joy!`,
+  pauseAndLook:     (src, tgt) => `The ${src} pauses to take in the ${tgt}.`,
+};
+
 // ─── Active story tracking ────────────────────────────────────────────────────
 // Maps agentId → { storyId, abortFn }
 const _activeStories = new Map();
@@ -64,6 +106,19 @@ function _resolveActor(plan, role) {
 async function _executeBeat(beatDesc, plan, controller) {
   const { type, actor: actorRole, params = {} } = beatDesc;
   const beatFn = getBeat(type);
+
+  // ── Live narrative update: swap dock text for key visible actions ──────────────
+  if (typeof window?.squiggleSetNarrative === 'function') {
+    const narrativeFn = BEAT_NARRATIVES[type];
+    if (narrativeFn) {
+      const srcLabel = plan.source?.label ?? 'one';
+      const tgtLabel = plan.target?.label ?? 'the other';
+      const beatNarrative = actorRole === 'target'
+        ? narrativeFn(tgtLabel, srcLabel)   // reverse perspective for target actor
+        : narrativeFn(srcLabel, tgtLabel);
+      window.squiggleSetNarrative(beatNarrative);
+    }
+  }
 
   if (actorRole === 'both') {
     // Run the same beat on both agents in parallel
@@ -108,6 +163,12 @@ export async function runStory(plan, controller) {
   _markStoryActive(target, plan.id, abort);
 
   console.log(`[StoryRunner] ▶ ${plan.id}: "${source.label}" + "${target.label}"`);
+
+  // ── Story-level narrative: update dock text immediately when beats start ──────
+  // This ensures the displayed text always matches what's actually animating.
+  if (typeof window?.squiggleSetNarrative === 'function') {
+    window.squiggleSetNarrative(_narrativeForPlan(plan));
+  }
 
   // ── Dedicated draw loop ────────────────────────────────────────────────────
   // Beat functions like ctrl.moveTo() and orbitAround() update Konva node
