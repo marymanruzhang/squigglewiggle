@@ -17,8 +17,12 @@ import { resolveProfile } from '/static/animation/semanticProfiles.js';
 const MIN_STROKES_FOR_DONE_BTN = 1;
 
 const state = {
-  activeZones: { left: false, right: false },
-  submitted:   { left: false, right: false },
+  activeZones:       { left: false, right: false },
+  submitted:         { left: false, right: false },
+  // orientationPending starts as true for both zones and is flipped to false
+  // once each zone's orientation decision is resolved (auto or user-confirmed).
+  // transitionToAnimationStage only fires when BOTH are false.
+  orientationPending: { left: true, right: true },
   drawSettings: {
     left:  { color: '#1a1a1a', size: 6, erasing: false },
     right: { color: '#1a1a1a', size: 6, erasing: false },
@@ -72,7 +76,131 @@ function resizeCanvas() {
 }
 window.addEventListener('resize', resizeCanvas);
 
-// ─── Start ───────────────────────────────────────────────────────────────────
+// ─── Orientation helpers (module-scope so both analyzeZone and
+//     transitionToAnimationStage can access them) ──────────────────────────────
+
+/** Rotate a canvas by 0/90/-90/180 degrees clockwise and return a new canvas. */
+function rotateCanvasHelper(src, degrees) {
+  const d = [0, 90, -90, 180].includes(degrees) ? degrees : 0;
+  if (!d) return src;
+  const transposed = d === 90 || d === -90;
+  const out = document.createElement('canvas');
+  out.width  = transposed ? src.height : src.width;
+  out.height = transposed ? src.width  : src.height;
+  const ctx = out.getContext('2d');
+  ctx.translate(out.width / 2, out.height / 2);
+  ctx.rotate(d * Math.PI / 180);
+  ctx.drawImage(src, -src.width / 2, -src.height / 2);
+  return out;
+}
+
+/**
+ * Fire when a zone's orientation decision is resolved (either auto-accepted
+ * or the user clicked a button). Triggers the animation transition once
+ * BOTH zones are submitted AND neither has a pending orientation decision.
+ */
+function checkReadyForAnimation() {
+  if (state.submitted.left  && state.submitted.right &&
+      !state.orientationPending.left && !state.orientationPending.right) {
+    // Small delay so the UI can settle (e.g. widget fade out)
+    setTimeout(() => transitionToAnimationStage(), 600);
+  }
+}
+
+/**
+ * Show a "Re-orient?" confirmation widget inside the result card for `zone`.
+ * The widget renders two side-by-side thumbnails (current vs corrected) and
+ * two buttons. Clicking either button resolves the orientation and calls
+ * checkReadyForAnimation().
+ *
+ * @param {string} zone        'left' | 'right'
+ * @param {number} rotation    Proposed correction in degrees (90, -90, 180)
+ * @param {object} result      state.results[zone] object (mutated on confirm)
+ * @param {Element} orientEl   The orient-badge DOM element
+ */
+function showOrientationPrompt(zone, rotation, result, orientEl) {
+  const snap = state.snapshots?.[zone];
+  const resEl = zone === 'left'
+    ? document.getElementById('result-left')
+    : document.getElementById('result-right');
+
+  // Resolve immediately if we have no snapshot to preview
+  if (!snap || !resEl) {
+    result.rotation_correction = 0;
+    state.orientationPending[zone] = false;
+    checkReadyForAnimation();
+    return;
+  }
+
+  const correctedSnap = rotateCanvasHelper(snap, rotation);
+
+  // Build thumbnail data URLs (max 110px wide)
+  function thumbURL(canvas) {
+    const MAX = 110;
+    const sc  = Math.min(MAX / canvas.width, MAX / canvas.height);
+    const tc  = document.createElement('canvas');
+    tc.width  = Math.round(canvas.width  * sc);
+    tc.height = Math.round(canvas.height * sc);
+    tc.getContext('2d').drawImage(canvas, 0, 0, tc.width, tc.height);
+    return tc.toDataURL('image/png');
+  }
+
+  const origURL = thumbURL(snap);
+  const corrURL = thumbURL(correctedSnap);
+  const arrow   = rotation === 90 ? '↻ 90°' : rotation === -90 ? '↺ 90°' : '↕ 180°';
+
+  // Auto-timeout: if neither button is clicked within 15s, keep as drawn
+  let settled = false;
+  const autoTimer = setTimeout(() => resolve(false), 15000);
+
+  function resolve(doRotate) {
+    if (settled) return;
+    settled = true;
+    clearTimeout(autoTimer);
+    widget.remove();
+
+    result.rotation_correction = doRotate ? rotation : 0;
+    result.facing_direction    = result.facing_direction ?? 'neutral';
+    state.orientationPending[zone] = false;
+
+    if (orientEl) {
+      if (doRotate) {
+        orientEl.textContent = `${arrow} — re-oriented`;
+        orientEl.className   = 'result-orient rotated';
+      } else {
+        orientEl.textContent = '✓ Kept as drawn';
+        orientEl.className   = 'result-orient upright';
+      }
+    }
+    checkReadyForAnimation();
+  }
+
+  const widget = document.createElement('div');
+  widget.className = 'orient-prompt';
+  widget.innerHTML = `
+    <p class="orient-prompt-q">Rotate to fix orientation?</p>
+    <div class="orient-previews">
+      <div class="orient-preview-col">
+        <div class="orient-preview-lbl">As drawn</div>
+        <img class="orient-thumb" src="${origURL}" alt="current">
+      </div>
+      <div class="orient-preview-arrow">${arrow}</div>
+      <div class="orient-preview-col">
+        <div class="orient-preview-lbl">Re-oriented</div>
+        <img class="orient-thumb" src="${corrURL}" alt="corrected">
+      </div>
+    </div>
+    <div class="orient-btns">
+      <button class="orient-btn orient-btn-yes">↺ Re-orient</button>
+      <button class="orient-btn orient-btn-no">✓ Keep as drawn</button>
+    </div>`;
+
+  widget.querySelector('.orient-btn-yes').addEventListener('click', () => resolve(true));
+  widget.querySelector('.orient-btn-no' ).addEventListener('click', () => resolve(false));
+  resEl.appendChild(widget);
+}
+
+// ─── Capture ──────────────────────────────────────────────────────────────────
 startBtn.addEventListener('click', async () => {
   welcome.style.display = 'none';
   setStatus('Requesting camera…');
@@ -428,115 +556,86 @@ async function analyzeZone(zone) {
     }
 
     // Fire orientation detection — don't block the UI, update badge when done.
-    // *** Uses strokesDataUrl (no mountain template) so GPT is not confused ***
+    // Uses strokesDataUrl (no mountain template) so GPT judges the sketch cleanly.
+    //
+    // If GPT detects rotation with high/medium confidence → show the user a
+    // side-by-side "Re-orient?" prompt and WAIT for their input before advancing.
+    // If no rotation detected, or low confidence → auto-accept (keep upright)
+    // and call checkReadyForAnimation() directly.
+    //
+    // A 12-second auto-timeout ensures the animation always starts eventually
+    // even if a user walks away from the prompt.
+
+    // Mark this zone as orientation-pending BEFORE the async call so that if
+    // the OTHER zone finishes first, checkReadyForAnimation() won't fire early.
+    state.orientationPending[zone] = true;
+
+    // 12-second failsafe — if orientation detection never resolves, auto-proceed
+    const orientFailsafe = setTimeout(() => {
+      if (state.orientationPending[zone]) {
+        result.rotation_correction = 0;
+        state.orientationPending[zone] = false;
+        if (orientEl) { orientEl.textContent = '✓ Upright'; orientEl.className = 'result-orient upright'; }
+        // Remove any stale prompt widget
+        document.querySelectorAll('.orient-prompt').forEach(el => el.remove());
+        checkReadyForAnimation();
+      }
+    }, 12000);
+
     detectSketchOrientation(strokesDataUrl, result.label).then(orient => {
-      const rawRot  = orient?.rotation_correction ?? 0;
-      const conf    = orient?.confidence ?? 'low';
+      clearTimeout(orientFailsafe);
 
-      // ── Gate 1: confidence ────────────────────────────────────────────────
-      // Only consider applying rotation at all if GPT is highly confident.
-      // 'medium' or 'low' → the sketch is almost certainly drawn correctly.
+      const rawRot = orient?.rotation_correction ?? 0;
+      const conf   = orient?.confidence ?? 'low';
 
-      // ── Gate 2: category / label whitelist ───────────────────────────────
-      // Rotation makes sense ONLY for objects that are genuinely commonly
-      // drawn sideways by people (e.g. butterfly with wings up/down, fish
-      // standing vertically). Everything else — plants, flowers, trees, stars,
-      // clouds, food, buildings, vehicles — is always drawn relative to
-      // the canvas frame and must NEVER be rotated.
-      //
-      // This is the definitive fix for cases like the flower being flipped
-      // sideways: even if GPT returns confidence='high' for a plant, this
-      // gate overrides it and keeps the sketch upright.
+      result.facing_direction = orient?.facing_direction ?? 'neutral';
 
-      const ROTATABLE_CATEGORIES = new Set([
-        'insect', 'insects', 'bug', 'bugs',
-      ]);
-
-      // ONLY these specific labels can be rotation-corrected.
-      // These are the ONLY subjects that users genuinely commonly draw sideways.
-      // Everything else — including dogs, sheep, horses, fish — is almost always
-      // drawn in its natural orientation and must never be rotated.
-      const ROTATABLE_LABELS = new Set([
-        'butterfly', 'moth', 'dragonfly',
-      ]);
-
-      // Hard block — never rotate these regardless of any other condition.
-      // Quadruped animals are ALWAYS drawn standing up by users; rotation
-      // correction almost always makes them worse, never better.
-      const NEVER_ROTATE_LABELS = new Set([
-        'flower', 'rose', 'tulip', 'daisy', 'sunflower', 'lotus', 'blossom',
-        'plant', 'tree', 'bush', 'cactus', 'fern', 'leaf', 'grass', 'mushroom',
-        'star', 'moon', 'sun', 'cloud', 'rainbow', 'lightning', 'snowflake',
-        'crown', 'ring', 'hat', 'ball', 'balloon', 'gem', 'diamond',
-        'house', 'building', 'castle', 'door', 'window', 'bridge',
-        'car', 'truck', 'bus', 'boat', 'ship', 'rocket', 'airplane', 'train',
-        'food', 'pizza', 'cake', 'apple', 'banana', 'strawberry',
-        // Animals — always drawn standing/swimming/flying in natural orientation
-        'dog', 'cat', 'sheep', 'cow', 'pig', 'horse', 'rabbit', 'deer',
-        'lion', 'tiger', 'bear', 'elephant', 'giraffe', 'fox', 'wolf',
-        'fish', 'shark', 'whale', 'dolphin', 'octopus', 'crab',
-        'bird', 'eagle', 'owl', 'penguin', 'flamingo', 'parrot', 'duck',
-        'snake', 'worm', 'caterpillar', 'snail',
-        'person', 'human', 'figure', 'character', 'robot',
-      ]);
-
-      const catLow   = (result.category ?? '').toLowerCase().trim();
-      const labelLow = (result.label    ?? '').toLowerCase().trim();
-
-      const isNeverRotate  = NEVER_ROTATE_LABELS.has(labelLow);
-      const isRotatable    = !isNeverRotate && (
-                               ROTATABLE_CATEGORIES.has(catLow) ||
-                               ROTATABLE_LABELS.has(labelLow)
-                             );
-
-      // All three conditions must be met to apply a rotation
-      const rot = (conf === 'high' && rawRot !== 0 && isRotatable) ? rawRot : 0;
-
-      // Override the classify-supplied rotation_correction with the dedicated result
-      result.rotation_correction = rot;
-      result.facing_direction    = orient?.facing_direction ?? 'neutral';
-
-      const reason = isNeverRotate        ? 'never-rotate list'
-                   : !isRotatable         ? 'not in rotatable category'
-                   : conf !== 'high'      ? `conf=${conf}`
-                   : rawRot === 0         ? 'already upright'
-                   :                       'applied';
       console.log(
-        `%c[orient] "${result.label}" (${catLow}) rawRot=${rawRot}° conf=${conf} → applied=${rot}° [${reason}]`,
+        `%c[orient] "${result.label}" rawRot=${rawRot}° conf=${conf} — ${orient?.reasoning ?? ''}`,
         'color:#d97706;font-weight:bold'
       );
 
-      // Update orientation badge
-      if (orientEl) {
-        if (rot === 0 && rawRot !== 0) {
-          orientEl.textContent = `✓ Upright (${reason})`;
-          orientEl.className = 'result-orient upright';
-        } else if (rot === 0) {
-          orientEl.textContent = '✓ Upright';
-          orientEl.className = 'result-orient upright';
-        } else {
-          const arrow = rot === 90 ? '↻ 90°' : rot === -90 ? '↺ 90°' : '⇅ 180°';
-          orientEl.textContent = `${arrow} — will be corrected`;
-          orientEl.className = 'result-orient rotated';
+      if (rawRot !== 0 && (conf === 'high' || conf === 'medium')) {
+        // ── GPT detected a likely mis-orientation → ask the user ──────────────
+        // The widget sets result.rotation_correction and calls
+        // checkReadyForAnimation() when the user (or the 15s auto-timer) resolves.
+        if (orientEl) {
+          orientEl.textContent = '⟳ Orientation check…';
+          orientEl.className   = 'result-orient checking';
         }
+        showOrientationPrompt(zone, rawRot, result, orientEl);
+      } else {
+        // ── No issue detected (or GPT too uncertain) → keep as drawn ──────────
+        result.rotation_correction = 0;
+        state.orientationPending[zone] = false;
+        if (orientEl) {
+          orientEl.textContent = rawRot !== 0
+            ? `✓ Upright (low confidence — skipped)`
+            : '✓ Upright';
+          orientEl.className = 'result-orient upright';
+        }
+        checkReadyForAnimation();
       }
     }).catch(err => {
-      console.warn('[orient] detection failed, using classify fallback:', err);
+      clearTimeout(orientFailsafe);
+      console.warn('[orient] detection failed:', err);
+      result.rotation_correction = 0;
+      state.orientationPending[zone] = false;
       if (orientEl) { orientEl.textContent = '✓ Upright (assumed)'; orientEl.className = 'result-orient upright'; }
+      checkReadyForAnimation();
     });
 
-    // ── Step 3: Store result (orientation will be updated async above) ──────
+    // ── Step 3: Store result (orientation updates asynchronously above) ─────
     state.results[zone] = result;
     state.submitted[zone] = true;
     document.getElementById(`zone-${zone}`)?.classList.add('submitted');
 
-    if (state.submitted.left && state.submitted.right) {
-      // Wait a moment so orientation detection can finish before transition
-      setTimeout(() => transitionToAnimationStage(), 1200);
-    }
-
+    // NOTE: Do NOT call transitionToAnimationStage() here. checkReadyForAnimation()
+    // handles the transition once BOTH zones are submitted AND orientation resolved.
     checkSaveAll();
   } catch (e) {
+    clearTimeout(orientFailsafe ?? 0);
+    state.orientationPending[zone] = false;   // unblock in case of classify error
     spin.classList.remove('visible');
     btn.disabled = false;
     btn.textContent = '⚠ Retry';

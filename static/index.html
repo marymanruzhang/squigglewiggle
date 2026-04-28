@@ -175,6 +175,81 @@
   .result-orient.rotated  { background: #fef3c7; color: #92400e; }
   .result-orient.checking { background: #f3f4f6; color: #6b7280; font-style: italic; }
 
+  /* ── Orientation confirmation prompt widget ─────────────────────────────── */
+  .orient-prompt {
+    margin-top: 10px;
+    padding: 10px 12px;
+    background: #fffbeb;
+    border: 1.5px solid #f59e0b;
+    border-radius: 12px;
+    animation: orient-slide-in 0.25s ease-out;
+  }
+  @keyframes orient-slide-in {
+    from { opacity: 0; transform: translateY(-6px); }
+    to   { opacity: 1; transform: translateY(0);    }
+  }
+  .orient-prompt-q {
+    font-size: 12px;
+    font-weight: 700;
+    color: #92400e;
+    margin: 0 0 8px;
+    text-align: center;
+    letter-spacing: 0.3px;
+  }
+  .orient-previews {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+  .orient-preview-col { text-align: center; }
+  .orient-preview-lbl {
+    font-size: 10px;
+    color: #78716c;
+    margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+  .orient-thumb {
+    display: block;
+    max-width: 110px;
+    max-height: 90px;
+    object-fit: contain;
+    border-radius: 8px;
+    border: 1px solid #e7e5e4;
+    background: #fff;
+  }
+  .orient-preview-arrow {
+    font-size: 18px;
+    color: #d97706;
+    flex-shrink: 0;
+  }
+  .orient-btns {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+  }
+  .orient-btn {
+    font-size: 12px;
+    font-weight: 600;
+    padding: 5px 12px;
+    border-radius: 20px;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.1s, opacity 0.1s;
+    font-family: inherit;
+  }
+  .orient-btn:active { transform: scale(0.95); }
+  .orient-btn-yes {
+    background: #2d6a4f;
+    color: #fff;
+  }
+  .orient-btn-no {
+    background: #e7e5e4;
+    color: #44403c;
+  }
+
   #result-left  { left:  12.5%; transform: translateX(-50%); }
   #result-right { left:  75%;   transform: translateX(-50%); }
 
