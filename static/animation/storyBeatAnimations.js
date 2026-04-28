@@ -316,61 +316,120 @@ export async function pulseLight(actor, _target, ctrl, params = {}) {
 }
 
 /**
- * Visual glow effect using Konva shadow properties.
- * Used for can_glow subjects (buildings, stars, celestial objects) when they
- * respond to an admiring/approaching animate creature.
+ * Visual glow effect for can_glow subjects (buildings, stars, celestial, etc.)
  *
- * Animates: shadowColor, shadowBlur (0 → peak → 0), shadowOpacity
- * Falls back gracefully if the Konva node doesn't support shadows.
+ * Two-layer approach for maximum visibility:
+ *   1. Konva shadow on the cached group (node.cache() required for Group shadows)
+ *   2. DOM overlay: a radial-gradient div on top of the canvas stage
+ *
+ * Both animate in sync: grow → hold → fade.
  */
 export async function glowPulse(actor, _target, ctrl, params = {}) {
-  const { duration = 2200, glowRadius = 42, glowColor = null } = params;
+  const { duration = 2400, glowRadius = 80, glowColor = null } = params;
 
-  const node = actor.adapter?.ref;   // Konva.Group
+  const node  = actor.adapter?.ref;   // Konva.Group
+  const layer = node?.getLayer?.() ?? actor.adapter?._layer;
   if (!node) { await wait(duration); return; }
 
-  // Pick a colour appropriate to the subject
+  // ── Pick colour ───────────────────────────────────────────────────────────
   const label = (actor.label ?? '').toLowerCase();
   const color = glowColor ??
-    (label === 'star'    ? '#d0eeff' :
-     label === 'moon'    ? '#c8c8f8' :
-     label === 'sun'     ? '#ffe066' :
-     label === 'fire'    ? '#ff9933' :
-     label === 'candle'  ? '#ffcc66' :
-     label === 'lantern' ? '#ffcc44' :
-     label === 'rainbow' ? '#ff88cc' :
-     '#ffd580');  // warm amber default (houses, buildings)
+    (label === 'star'    ? '#a8d8ff' :
+     label === 'moon'    ? '#c0c0f8' :
+     label === 'sun'     ? '#ffe033' :
+     label === 'fire'    ? '#ff8800' :
+     label === 'candle'  ? '#ffcc44' :
+     label === 'lantern' ? '#ffbb33' :
+     label === 'rainbow' ? '#ff66cc' :
+     '#ffb347');  // warm amber (houses, buildings)
 
-  // Enable shadow
-  node.shadowColor(color);
-  node.shadowOffset({ x: 0, y: 0 });  // centred glow, not directional
-  node.shadowBlur(0);
-  node.shadowOpacity(0);
-  node.shadowEnabled(true);
-  node.getLayer()?.batchDraw();
+  console.log(`[glowPulse] firing on "${actor.label}" — color=${color}`);
 
-  const grow   = Math.floor(duration * 0.40);
-  const hold   = Math.floor(duration * 0.20);
+  const grow   = Math.floor(duration * 0.38);
+  const hold   = Math.floor(duration * 0.24);
   const shrink = duration - grow - hold;
 
-  // Grow phase
+  // ── Layer 1: Konva Group shadow ───────────────────────────────────────────
+  // Groups require cache() before shadow renders. Safe here because the agent
+  // is stopped (story_active) so the cached bitmap won't be stale.
+  let konvaOk = false;
+  try {
+    node.cache({ pixelRatio: 1 });
+    node.shadowColor(color);
+    node.shadowOffset({ x: 0, y: 0 });
+    node.shadowBlur(0);
+    node.shadowOpacity(0);
+    node.shadowEnabled(true);
+    layer?.batchDraw();
+    konvaOk = true;
+  } catch (e) {
+    console.warn('[glowPulse] Konva shadow setup failed:', e.message);
+  }
+
+  // ── Layer 2: DOM overlay glow ─────────────────────────────────────────────
+  // A radial-gradient div positioned over the sketch, guaranteed visible.
+  const stage  = node.getStage?.();
+  const container = stage?.container?.();   // the div wrapping the canvas
+  let glowDiv = null;
+  if (container) {
+    const kr  = node.getClientRect({ relativeTo: stage });  // position in stage coords
+    const sc  = container.getBoundingClientRect();
+    const ssc = stage.container().getBoundingClientRect();
+
+    glowDiv = document.createElement('div');
+    const pad = glowRadius * 1.8;
+    glowDiv.style.cssText = [
+      'position:absolute',
+      `left:${kr.x - pad / 2}px`,
+      `top:${kr.y - pad / 2}px`,
+      `width:${kr.width + pad}px`,
+      `height:${kr.height + pad}px`,
+      `border-radius:50%`,
+      `background:radial-gradient(circle, ${color}cc 0%, ${color}66 35%, transparent 70%)`,
+      `filter:blur(${Math.round(glowRadius * 0.55)}px)`,
+      `pointer-events:none`,
+      `z-index:8999`,
+      `opacity:0`,
+      `transition:none`,
+    ].join(';');
+
+    // The container needs relative positioning for the overlay to place correctly
+    if (!container.style.position || container.style.position === 'static') {
+      container.style.position = 'relative';
+    }
+    container.appendChild(glowDiv);
+  }
+
+  // ── Animate grow ──────────────────────────────────────────────────────────
   await _tweenProp(grow, t => {
-    node.shadowBlur(lerp(0, glowRadius, t));
-    node.shadowOpacity(lerp(0, 0.85, t));
+    if (konvaOk) {
+      node.shadowBlur(lerp(0, glowRadius, t));
+      node.shadowOpacity(lerp(0, 1.0, t));
+      layer?.batchDraw();
+    }
+    if (glowDiv) glowDiv.style.opacity = String(lerp(0, 1, t));
   });
 
-  // Hold phase (full glow)
+  // ── Hold at full glow ─────────────────────────────────────────────────────
   await wait(hold);
 
-  // Shrink / fade-out phase
+  // ── Animate shrink ────────────────────────────────────────────────────────
   await _tweenProp(shrink, t => {
-    node.shadowBlur(lerp(glowRadius, 0, t));
-    node.shadowOpacity(lerp(0.85, 0, t));
+    if (konvaOk) {
+      node.shadowBlur(lerp(glowRadius, 0, t));
+      node.shadowOpacity(lerp(1.0, 0, t));
+      layer?.batchDraw();
+    }
+    if (glowDiv) glowDiv.style.opacity = String(lerp(1, 0, t));
   });
 
-  // Clean up so the glow doesn't linger
-  node.shadowEnabled(false);
-  node.getLayer()?.batchDraw();
+  // ── Cleanup ───────────────────────────────────────────────────────────────
+  if (konvaOk) {
+    node.shadowEnabled(false);
+    try { node.clearCache(); } catch (e) {}
+    layer?.batchDraw();
+  }
+  if (glowDiv) glowDiv.remove();
 }
 
 // ── Movement beats ────────────────────────────────────────────────────────────
