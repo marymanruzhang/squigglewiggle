@@ -423,26 +423,82 @@ async function analyzeZone(zone) {
       const rawRot  = orient?.rotation_correction ?? 0;
       const conf    = orient?.confidence ?? 'low';
 
-      // ── Confidence gate: only apply the correction if GPT is highly confident ──
-      // 'medium' or 'low' confidence means the sketch is probably fine as-is.
-      // A wrong rotation (like flipping a flower upside-down) is worse than
-      // leaving a slightly sideways sketch alone.
-      const rot = (conf === 'high' && rawRot !== 0) ? rawRot : 0;
+      // ── Gate 1: confidence ────────────────────────────────────────────────
+      // Only consider applying rotation at all if GPT is highly confident.
+      // 'medium' or 'low' → the sketch is almost certainly drawn correctly.
+
+      // ── Gate 2: category / label whitelist ───────────────────────────────
+      // Rotation makes sense ONLY for objects that are genuinely commonly
+      // drawn sideways by people (e.g. butterfly with wings up/down, fish
+      // standing vertically). Everything else — plants, flowers, trees, stars,
+      // clouds, food, buildings, vehicles — is always drawn relative to
+      // the canvas frame and must NEVER be rotated.
+      //
+      // This is the definitive fix for cases like the flower being flipped
+      // sideways: even if GPT returns confidence='high' for a plant, this
+      // gate overrides it and keeps the sketch upright.
+
+      const ROTATABLE_CATEGORIES = new Set([
+        'animal', 'animals', 'creature', 'creatures',
+        'insect', 'insects', 'bug', 'bugs',
+        'bird', 'birds',
+        'fish', 'sea creature', 'sea creatures', 'marine',
+        'character', 'characters', 'person', 'people', 'human',
+        'reptile', 'amphibian',
+      ]);
+
+      // Specific labels known to commonly be drawn sideways
+      const ROTATABLE_LABELS = new Set([
+        'butterfly', 'moth', 'dragonfly', 'bee', 'fly', 'mosquito',
+        'fish', 'shark', 'whale', 'dolphin', 'octopus', 'starfish',
+        'snake', 'worm', 'caterpillar', 'slug',
+        'bird', 'eagle', 'owl', 'penguin', 'flamingo', 'parrot',
+        'horse', 'dog', 'cat', 'rabbit', 'sheep', 'cow', 'pig',
+        'lion', 'tiger', 'elephant', 'giraffe', 'deer', 'fox',
+        'person', 'human', 'figure', 'character',
+      ]);
+
+      // Hard block — never rotate these regardless of any other condition
+      const NEVER_ROTATE_LABELS = new Set([
+        'flower', 'rose', 'tulip', 'daisy', 'sunflower', 'lotus',
+        'plant', 'tree', 'bush', 'cactus', 'fern', 'leaf', 'grass',
+        'star', 'moon', 'sun', 'cloud', 'rainbow', 'lightning',
+        'crown', 'ring', 'hat', 'ball', 'balloon',
+        'house', 'building', 'castle', 'door', 'window',
+        'car', 'truck', 'boat', 'rocket', 'airplane',
+        'food', 'pizza', 'cake', 'apple', 'banana',
+      ]);
+
+      const catLow   = (result.category ?? '').toLowerCase().trim();
+      const labelLow = (result.label    ?? '').toLowerCase().trim();
+
+      const isNeverRotate  = NEVER_ROTATE_LABELS.has(labelLow);
+      const isRotatable    = !isNeverRotate && (
+                               ROTATABLE_CATEGORIES.has(catLow) ||
+                               ROTATABLE_LABELS.has(labelLow)
+                             );
+
+      // All three conditions must be met to apply a rotation
+      const rot = (conf === 'high' && rawRot !== 0 && isRotatable) ? rawRot : 0;
 
       // Override the classify-supplied rotation_correction with the dedicated result
       result.rotation_correction = rot;
       result.facing_direction    = orient?.facing_direction ?? 'neutral';
 
+      const reason = isNeverRotate        ? 'never-rotate list'
+                   : !isRotatable         ? 'not in rotatable category'
+                   : conf !== 'high'      ? `conf=${conf}`
+                   : rawRot === 0         ? 'already upright'
+                   :                       'applied';
       console.log(
-        `%c[orient] "${result.label}" rawRot=${rawRot}° conf=${conf} → applied=${rot}° — ${orient?.reasoning ?? ''}`,
+        `%c[orient] "${result.label}" (${catLow}) rawRot=${rawRot}° conf=${conf} → applied=${rot}° [${reason}]`,
         'color:#d97706;font-weight:bold'
       );
 
       // Update orientation badge
       if (orientEl) {
         if (rot === 0 && rawRot !== 0) {
-          // GPT detected something but not confident enough — leave upright
-          orientEl.textContent = `✓ Upright (${conf} confidence — not corrected)`;
+          orientEl.textContent = `✓ Upright (${reason})`;
           orientEl.className = 'result-orient upright';
         } else if (rot === 0) {
           orientEl.textContent = '✓ Upright';
