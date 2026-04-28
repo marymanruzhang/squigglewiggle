@@ -595,7 +595,7 @@ async function analyzeZone(zone) {
         'color:#d97706;font-weight:bold'
       );
 
-      if (rawRot !== 0 && (conf === 'high' || conf === 'medium')) {
+      if (rawRot !== 0 && conf === 'high') {
         // ── GPT detected a likely mis-orientation → ask the user ──────────────
         // The widget sets result.rotation_correction and calls
         // checkReadyForAnimation() when the user (or the 15s auto-timer) resolves.
