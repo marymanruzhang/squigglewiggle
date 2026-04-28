@@ -73,6 +73,7 @@ const BEAT_NARRATIVES = {
   returnToIdle:     null,  // silent — no text update on cleanup beats
   // Capability-sensitive — resolved in _executeBeat below:
   growOrBloom:      null,
+  glowPulse:        null,  // resolved via _capNarrative
   happyBounce:      null,
   reactBounce:      null,
   strongerSway:     null,
@@ -94,6 +95,20 @@ function _capNarrative(beatType, actorLabel, actorCategory) {
       if (caps.has('can_glow'))    return `The ${name} glows warmly.`;
       if (caps.has('can_sway'))    return `The ${name} sways gently.`;
       return `The ${name} shimmers in response.`;
+
+    case 'glowPulse': {
+      // Subject-specific glow descriptions
+      const glowVerb =
+        name === 'star'    ? `The ${name} twinkles brightly!` :
+        name === 'moon'    ? `The ${name} glimmers with a soft light.` :
+        name === 'sun'     ? `The ${name} shines warmly.` :
+        name === 'fire'    ? `The ${name} blazes with light!` :
+        name === 'candle'  ? `The ${name} flickers with a warm glow.` :
+        name === 'lantern' ? `The ${name} glows with a cosy light.` :
+        name === 'rainbow' ? `The ${name} shimmers with colour!` :
+        `The ${name} glows warmly.`;
+      return glowVerb;
+    }
 
     case 'happyBounce':
       if (caps.has('can_bounce')) return `The ${name} bounces with excitement!`;

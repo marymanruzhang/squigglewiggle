@@ -234,10 +234,12 @@ function _substituteBeats(beats, source, target) {
       const caps = getCaps(actor.label, actor.category);
 
       switch (beat.type) {
-        // growOrBloom — requires can_blossom or can_glow
+        // growOrBloom — three cases based on capability
         case 'growOrBloom':
-          if (caps.has('can_blossom') || caps.has('can_glow')) return beat;
-          // Fallback: sway for plants, wiggle for everything else
+          if (caps.has('can_blossom')) return beat;   // plant bloom — keep as-is
+          if (caps.has('can_glow'))                   // building/star/moon — real glow
+            return { ...beat, type: 'glowPulse', params: { duration: beat.params?.duration ?? 2200, glowRadius: 42 } };
+          // No relevant capability — passive sway or wiggle
           return caps.has('can_sway')
             ? { ...beat, type: 'strongerSway',  params: { duration: 900, amplitude: 8 } }
             : { ...beat, type: 'reactWiggle',   params: { duration: 700, amplitude: 5 } };

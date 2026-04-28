@@ -315,6 +315,64 @@ export async function pulseLight(actor, _target, ctrl, params = {}) {
   await ctrl.playOnce(actor, 'pulse', { amplitude, speed, duration }, duration);
 }
 
+/**
+ * Visual glow effect using Konva shadow properties.
+ * Used for can_glow subjects (buildings, stars, celestial objects) when they
+ * respond to an admiring/approaching animate creature.
+ *
+ * Animates: shadowColor, shadowBlur (0 → peak → 0), shadowOpacity
+ * Falls back gracefully if the Konva node doesn't support shadows.
+ */
+export async function glowPulse(actor, _target, ctrl, params = {}) {
+  const { duration = 2200, glowRadius = 42, glowColor = null } = params;
+
+  const node = actor.adapter?.ref;   // Konva.Group
+  if (!node) { await wait(duration); return; }
+
+  // Pick a colour appropriate to the subject
+  const label = (actor.label ?? '').toLowerCase();
+  const color = glowColor ??
+    (label === 'star'    ? '#d0eeff' :
+     label === 'moon'    ? '#c8c8f8' :
+     label === 'sun'     ? '#ffe066' :
+     label === 'fire'    ? '#ff9933' :
+     label === 'candle'  ? '#ffcc66' :
+     label === 'lantern' ? '#ffcc44' :
+     label === 'rainbow' ? '#ff88cc' :
+     '#ffd580');  // warm amber default (houses, buildings)
+
+  // Enable shadow
+  node.shadowColor(color);
+  node.shadowOffset({ x: 0, y: 0 });  // centred glow, not directional
+  node.shadowBlur(0);
+  node.shadowOpacity(0);
+  node.shadowEnabled(true);
+  node.getLayer()?.batchDraw();
+
+  const grow   = Math.floor(duration * 0.40);
+  const hold   = Math.floor(duration * 0.20);
+  const shrink = duration - grow - hold;
+
+  // Grow phase
+  await _tweenProp(grow, t => {
+    node.shadowBlur(lerp(0, glowRadius, t));
+    node.shadowOpacity(lerp(0, 0.85, t));
+  });
+
+  // Hold phase (full glow)
+  await wait(hold);
+
+  // Shrink / fade-out phase
+  await _tweenProp(shrink, t => {
+    node.shadowBlur(lerp(glowRadius, 0, t));
+    node.shadowOpacity(lerp(0.85, 0, t));
+  });
+
+  // Clean up so the glow doesn't linger
+  node.shadowEnabled(false);
+  node.getLayer()?.batchDraw();
+}
+
 // ── Movement beats ────────────────────────────────────────────────────────────
 
 /**
@@ -443,6 +501,7 @@ export const BEATS = {
   // Positive reactions
   happyBounce,
   growOrBloom,
+  glowPulse,
   strongerSway,
   restNearTarget,
   landNearTarget,
